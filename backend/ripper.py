@@ -80,14 +80,27 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
     """
     Scan page HTML (and source URL) for embedded video IDs.
     Returns (platform, video_id, extra) where extra holds platform-specific metadata.
+    Raises ValueError for pages where the platform is detected but video ID requires
+    browser rendering (e.g. Angular SPAs) — caller should surface a helpful message.
     """
+    # Direct BrightCove player URL pasted as input — handle immediately
+    bc_direct = re.match(
+        r'https?://players\.brightcove\.net/(\d+)/([A-Za-z0-9_-]+)_default.*[?&]videoId=(\d+)',
+        source_url or '',
+    )
+    if bc_direct:
+        return 'brightcove', bc_direct.group(3), {
+            'bc_account_id': bc_direct.group(1),
+            'bc_player_id': bc_direct.group(2),
+            'bc_direct_url': source_url,
+        }
+
     for platform, patterns in PATTERNS.items():
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE)
             if match:
                 extra = {}
                 if platform == 'brightcove':
-                    # Also extract account + player IDs to build the player URL
                     for p in BC_ACCOUNT_PATTERNS:
                         m = re.search(p, html, re.IGNORECASE)
                         if m:
@@ -98,7 +111,17 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
                         if m:
                             extra['bc_player_id'] = m.group(1)
                             break
+                    # If we found a video ID but no account ID, the page is a SPA —
+                    # we can't build the player URL without the account
+                    if not extra.get('bc_account_id'):
+                        raise ValueError(
+                            'BrightCove SPA detected — video ID is loaded by JavaScript and '
+                            'cannot be extracted from static HTML. Open the page in Chrome, '
+                            'open DevTools → Network tab, reload, filter by "brightcove.net", '
+                            'and paste the players.brightcove.net URL directly into VidRipper.'
+                        )
                 return platform, match.group(1), extra
+
     return 'unknown', '', {}
 
 
@@ -109,10 +132,11 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
     elif platform == 'wistia':
         return f'https://fast.wistia.com/medias/{video_id}'
     elif platform == 'brightcove':
+        if extra.get('bc_direct_url'):
+            return extra['bc_direct_url']
         account = extra.get('bc_account_id', '')
         player = extra.get('bc_player_id', 'default')
         if account and video_id:
-            # Standard BrightCove player URL — yt-dlp handles this natively
             return (f'https://players.brightcove.net/{account}/{player}_default'
                     f'/index.html?videoId={video_id}')
         return source_url
@@ -122,6 +146,21 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
         return source_url
 
 
+COOKIES_DIR = Path(__file__).resolve().parent.parent / 'data' / 'cookies'
+
+
+def _cookies_path(platform: str) -> str | None:
+    """Return path to cookies.txt for this platform if it exists."""
+    COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+    specific = COOKIES_DIR / f'{platform}.txt'
+    generic = COOKIES_DIR / 'cookies.txt'
+    if specific.exists():
+        return str(specific)
+    if generic.exists():
+        return str(generic)
+    return None
+
+
 def download_video(platform: str, video_id: str, source_url: str, dest_path: str, extra: dict = None) -> str:
     """
     Download video using yt-dlp to dest_path (full .mp4 path).
@@ -129,19 +168,27 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
     """
     yt_url = _build_yt_dlp_url(platform, video_id, source_url, extra)
 
+    cmd = [
+        'yt-dlp',
+        '--no-playlist',
+        '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+        '--merge-output-format', 'mp4',
+        '--output', '',  # filled below after tmp_dir is created
+        '--no-warnings',
+    ]
+
+    cookies = _cookies_path(platform)
+    if cookies:
+        cmd += ['--cookies', cookies]
+
     # Use a temp dir so yt-dlp can write its own filename, then we rename
     tmp_dir = tempfile.mkdtemp()
+    cmd[cmd.index('--output') + 1] = str(Path(tmp_dir) / 'video.%(ext)s')
+    cmd.append(yt_url)
+
     try:
         result = subprocess.run(
-            [
-                'yt-dlp',
-                '--no-playlist',
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-                '--merge-output-format', 'mp4',
-                '--output', str(Path(tmp_dir) / 'video.%(ext)s'),
-                '--no-warnings',
-                yt_url,
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,

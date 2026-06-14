@@ -108,9 +108,10 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             'pipeline_step': 'submitting_to_rev',
         })
 
-        # Step 4: Rev upload + order
-        media_url = rev_client.upload_media(dest_path)
-        order_id = rev_client.submit_order(media_url, f'{job_id}.mp4')
+        # Step 4: Rev order — pass our public video URL so Rev can fetch it
+        app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
+        video_url = f'{app_base}/api/jobs/{job_id}/video'
+        order_id = rev_client.submit_order(video_url, f'{job_id}.mp4')
         _update_job(job_id, {
             'rev_order_id': order_id,
             'rev_status': 'in_progress',
@@ -216,6 +217,14 @@ def get_transcript(job_id):
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/jobs/<job_id>/video')
+def serve_video(job_id):
+    video_path = VIDEOS_DIR / f'{job_id}.mp4'
+    if not video_path.exists():
+        abort(404)
+    return send_from_directory(str(VIDEOS_DIR), f'{job_id}.mp4', mimetype='video/mp4')
 
 
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])

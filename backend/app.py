@@ -108,10 +108,11 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             'pipeline_step': 'submitting_to_rev',
         })
 
-        # Step 4: Rev order — pass our public video URL so Rev can fetch it
+        # Step 4: Rev — tell Rev to fetch the video, then place transcription order
         app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
         video_url = f'{app_base}/api/jobs/{job_id}/video'
-        order_id = rev_client.submit_order(video_url, f'{job_id}.mp4')
+        input_uri = rev_client.submit_input(video_url, f'{job_id}.mp4')
+        order_id = rev_client.submit_order(input_uri, f'{job_id}.mp4')
         _update_job(job_id, {
             'rev_order_id': order_id,
             'rev_status': 'in_progress',

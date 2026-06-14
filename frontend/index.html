@@ -313,7 +313,7 @@ function cardHTML(job) {
     ? `<div class="card-error">&#9888; ${esc(job.error)}</div>` : '';
 
   const dlBtn = job.local_video
-    ? `<a class="btn-sm btn-dl" href="/data/videos/${job.id}.mp4" download>Download MP4</a>` : '';
+    ? `<a class="btn-sm btn-dl" href="/api/jobs/${job.id}/video" download="${job.id}.mp4">Download MP4</a>` : '';
 
   const transcriptBtn = (job.rev_order_id && revStatus !== 'failed')
     ? `<button class="btn-sm btn-transcript" onclick="openTranscript('${job.id}','${esc(job.title)}')">View Transcript</button>`

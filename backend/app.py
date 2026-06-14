@@ -93,7 +93,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
         # Step 2: detect platform
-        platform, video_id = ripper.detect_platform(html, source_url)
+        platform, video_id, extra = ripper.detect_platform(html, source_url)
         _update_job(job_id, {
             'platform': platform,
             'video_id': video_id,
@@ -102,7 +102,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
 
         # Step 3: download
         dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
-        ripper.download_video(platform, video_id, source_url, dest_path)
+        ripper.download_video(platform, video_id, source_url, dest_path, extra)
         _update_job(job_id, {
             'local_video': f'/data/videos/{job_id}.mp4',
             'pipeline_step': 'submitting_to_rev',

@@ -24,14 +24,26 @@ PATTERNS = {
         r'wistia\.com/medias/([a-z0-9]+)',
     ],
     'brightcove': [
-        r'data-video-id=["\'](\d+)["\']',
-        r'"videoId"\s*:\s*"(\d+)"',
+        r'data-video-id=["\'](\d{10,})["\']',
+        r'"videoId"\s*:\s*"(\d{10,})"',
+        r'videoId=(\d{10,})',
     ],
     'vidalytics': [
         r'vidalytics\.com/embed/([A-Za-z0-9_-]+)',
         r'vidalytics_embed[^"\']*["\']([A-Za-z0-9_-]{8,})["\']',
     ],
 }
+
+# BrightCove also needs account ID + player ID to build the player URL
+BC_ACCOUNT_PATTERNS = [
+    r'data-account=["\'](\d+)["\']',
+    r'accountId["\s:]+["\'](\d+)["\']',
+    r'players\.brightcove\.net/(\d+)/',
+]
+BC_PLAYER_PATTERNS = [
+    r'data-player=["\']([A-Za-z0-9_-]+)["\']',
+    r'players\.brightcove\.net/\d+/([A-Za-z0-9_-]+)_default',
+]
 
 HEADERS = {
     'User-Agent': (
@@ -64,45 +76,58 @@ def fetch_page(url: str) -> tuple[str, str, str]:
     return html, title, thumbnail
 
 
-def detect_platform(html: str, source_url: str = '') -> tuple[str, str]:
+def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
     """
     Scan page HTML (and source URL) for embedded video IDs.
-    Returns (platform, video_id) or ('unknown', '').
+    Returns (platform, video_id, extra) where extra holds platform-specific metadata.
     """
-    # BrightCove Angular SPAs don't render video IDs in static HTML —
-    # check URL params first (e.g. assetId= pattern used by InvestorPlace)
-    if source_url:
-        bc_url_match = re.search(r'[?&]assetId=([A-Za-z0-9]+)', source_url)
-        if bc_url_match:
-            return 'brightcove', bc_url_match.group(1)
-
     for platform, patterns in PATTERNS.items():
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE)
             if match:
-                return platform, match.group(1)
-    return 'unknown', ''
+                extra = {}
+                if platform == 'brightcove':
+                    # Also extract account + player IDs to build the player URL
+                    for p in BC_ACCOUNT_PATTERNS:
+                        m = re.search(p, html, re.IGNORECASE)
+                        if m:
+                            extra['bc_account_id'] = m.group(1)
+                            break
+                    for p in BC_PLAYER_PATTERNS:
+                        m = re.search(p, html, re.IGNORECASE)
+                        if m:
+                            extra['bc_player_id'] = m.group(1)
+                            break
+                return platform, match.group(1), extra
+    return 'unknown', '', {}
 
 
-def _build_yt_dlp_url(platform: str, video_id: str, source_url: str) -> str:
+def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict = None) -> str:
+    extra = extra or {}
     if platform == 'youtube':
         return f'https://www.youtube.com/watch?v={video_id}'
     elif platform == 'wistia':
         return f'https://fast.wistia.com/medias/{video_id}'
     elif platform == 'brightcove':
-        return source_url  # generic extractor on original page
+        account = extra.get('bc_account_id', '')
+        player = extra.get('bc_player_id', 'default')
+        if account and video_id:
+            # Standard BrightCove player URL — yt-dlp handles this natively
+            return (f'https://players.brightcove.net/{account}/{player}_default'
+                    f'/index.html?videoId={video_id}')
+        return source_url
     elif platform == 'vidalytics':
         return f'https://vidalytics.com/embed/{video_id}'
     else:
         return source_url
 
 
-def download_video(platform: str, video_id: str, source_url: str, dest_path: str) -> str:
+def download_video(platform: str, video_id: str, source_url: str, dest_path: str, extra: dict = None) -> str:
     """
     Download video using yt-dlp to dest_path (full .mp4 path).
     Returns the actual output path.
     """
-    yt_url = _build_yt_dlp_url(platform, video_id, source_url)
+    yt_url = _build_yt_dlp_url(platform, video_id, source_url, extra)
 
     # Use a temp dir so yt-dlp can write its own filename, then we rename
     tmp_dir = tempfile.mkdtemp()

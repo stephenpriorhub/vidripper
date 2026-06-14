@@ -93,7 +93,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
         # Step 2: detect platform
-        platform, video_id = ripper.detect_platform(html)
+        platform, video_id = ripper.detect_platform(html, source_url)
         _update_job(job_id, {
             'platform': platform,
             'video_id': video_id,

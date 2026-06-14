@@ -64,11 +64,18 @@ def fetch_page(url: str) -> tuple[str, str, str]:
     return html, title, thumbnail
 
 
-def detect_platform(html: str) -> tuple[str, str]:
+def detect_platform(html: str, source_url: str = '') -> tuple[str, str]:
     """
-    Scan page HTML for embedded video IDs.
+    Scan page HTML (and source URL) for embedded video IDs.
     Returns (platform, video_id) or ('unknown', '').
     """
+    # BrightCove Angular SPAs don't render video IDs in static HTML —
+    # check URL params first (e.g. assetId= pattern used by InvestorPlace)
+    if source_url:
+        bc_url_match = re.search(r'[?&]assetId=([A-Za-z0-9]+)', source_url)
+        if bc_url_match:
+            return 'brightcove', bc_url_match.group(1)
+
     for platform, patterns in PATTERNS.items():
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE)
@@ -104,7 +111,7 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
             [
                 'yt-dlp',
                 '--no-playlist',
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
                 '--merge-output-format', 'mp4',
                 '--output', str(Path(tmp_dir) / 'video.%(ext)s'),
                 '--no-warnings',

@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<style>html{visibility:hidden}</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VideoRipper — OxfordHub</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh}
+
+/* ── header ── */
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:14px 28px;display:flex;align-items:center;gap:12px}
+.header-icon{font-size:1.4rem}
+.header h1{font-size:1.15rem;font-weight:700;color:#e6edf3}
+.header .sub{font-size:.72rem;color:#8b949e;margin-top:2px}
+
+/* ── rip bar ── */
+.rip-bar{background:#161b22;border-bottom:1px solid #30363d;padding:18px 28px}
+.rip-form{display:flex;gap:10px;max-width:860px}
+.rip-input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:10px 14px;font-size:.92rem;outline:none;transition:border-color .15s}
+.rip-input:focus{border-color:#58a6ff}
+.rip-input::placeholder{color:#484f58}
+.rip-btn{background:#238636;border:1px solid #2ea043;color:#fff;padding:10px 22px;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:600;white-space:nowrap;transition:background .15s}
+.rip-btn:hover{background:#2ea043}
+.rip-btn:disabled{background:#21262d;border-color:#30363d;color:#484f58;cursor:not-allowed}
+
+/* ── progress steps ── */
+.progress-bar{max-width:860px;margin-top:12px;display:none}
+.progress-bar.visible{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:5px;font-size:.78rem;color:#8b949e;padding:4px 10px;background:#21262d;border-radius:20px;border:1px solid #30363d}
+.step.active{color:#58a6ff;border-color:#58a6ff;background:#0d1b2a}
+.step.done{color:#3fb950;border-color:#3fb950;background:#0d1f0d}
+.step.error{color:#f85149;border-color:#f85149;background:#2d0d0d}
+.step-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* ── main ── */
+.main{padding:24px 28px}
+
+/* ── empty state ── */
+.empty{text-align:center;padding:60px 20px;color:#484f58}
+.empty-icon{font-size:3rem;margin-bottom:12px}
+.empty-msg{font-size:.95rem}
+
+/* ── card grid ── */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+
+/* ── job card ── */
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden;transition:border-color .15s}
+.card:hover{border-color:#58a6ff30}
+.card-thumb{width:100%;height:170px;object-fit:cover;background:#21262d;display:block}
+.card-thumb-placeholder{width:100%;height:170px;background:linear-gradient(135deg,#21262d 0%,#161b22 100%);display:flex;align-items:center;justify-content:center;color:#484f58;font-size:2rem}
+.card-body{padding:14px}
+.card-meta{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.platform-badge{font-size:.67rem;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.4px}
+.platform-youtube{background:#ff000022;color:#ff4444;border:1px solid #ff444440}
+.platform-wistia{background:#54bbff22;color:#54bbff;border:1px solid #54bbff40}
+.platform-brightcove{background:#ff6b0022;color:#ff8c00;border:1px solid #ff8c0040}
+.platform-vidalytics{background:#a855f722;color:#c084fc;border:1px solid #c084fc40}
+.platform-unknown{background:#ffffff11;color:#8b949e;border:1px solid #30363d}
+.rev-badge{font-size:.67rem;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.4px;margin-left:auto}
+.rev-pending{background:#21262d;color:#8b949e;border:1px solid #30363d}
+.rev-in_progress{background:#1c2a3a;color:#58a6ff;border:1px solid #1f6feb}
+.rev-complete{background:#0d1f0d;color:#3fb950;border:1px solid #238636}
+.rev-failed{background:#2d0d0d;color:#f85149;border:1px solid #da3633}
+.card-title{font-size:.88rem;font-weight:600;color:#e6edf3;margin-bottom:4px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card-url{font-size:.72rem;color:#8b949e;margin-bottom:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-url a{color:#8b949e;text-decoration:none}
+.card-url a:hover{color:#58a6ff}
+.card-date{font-size:.69rem;color:#484f58;margin-bottom:10px}
+.card-actions{display:flex;gap:6px;flex-wrap:wrap}
+.btn-sm{font-size:.75rem;padding:5px 11px;border-radius:5px;cursor:pointer;border:1px solid;font-weight:600;transition:all .12s;text-decoration:none;display:inline-block}
+.btn-dl{background:#21262d;border-color:#30363d;color:#e6edf3}.btn-dl:hover{background:#30363d}
+.btn-transcript{background:#0d1b2a;border-color:#1f6feb;color:#58a6ff}.btn-transcript:hover{background:#1c2a3a}
+.btn-delete{background:#2d0d0d;border-color:#da3633;color:#f85149;margin-left:auto}.btn-delete:hover{background:#3d1111}
+.card-error{font-size:.73rem;color:#f85149;margin-top:8px;background:#2d0d0d;border-radius:4px;padding:6px 8px;line-height:1.4}
+
+/* ── pipeline step indicator on card ── */
+.pipeline-status{font-size:.72rem;color:#58a6ff;display:flex;align-items:center;gap:5px;margin-bottom:8px}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── modal ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;display:none}
+.modal-overlay.open{display:flex}
+.modal{background:#161b22;border:1px solid #30363d;border-radius:10px;width:100%;max-width:760px;max-height:80vh;display:flex;flex-direction:column}
+.modal-header{padding:16px 20px;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-size:.95rem;font-weight:700}
+.modal-close{background:none;border:none;color:#8b949e;font-size:1.3rem;cursor:pointer;padding:0 4px;line-height:1}.modal-close:hover{color:#e6edf3}
+.modal-body{padding:20px;overflow-y:auto;flex:1;white-space:pre-wrap;font-size:.82rem;line-height:1.7;color:#c9d1d9;font-family:'Courier New',monospace}
+
+/* ── section header ── */
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.section-title{font-size:.85rem;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.refresh-btn{background:none;border:1px solid #30363d;color:#8b949e;padding:4px 12px;border-radius:5px;cursor:pointer;font-size:.75rem}
+.refresh-btn:hover{border-color:#58a6ff;color:#58a6ff}
+</style>
+</head>
+<body>
+<script src="https://oxfordhub.app/hub-nav.js" data-project-id="vidripper" id="hub-nav"></script>
+
+<div class="header">
+  <div class="header-icon">&#127909;</div>
+  <div>
+    <h1>VideoRipper</h1>
+    <div class="sub">Paste a page URL — extract, download, and transcribe embedded video</div>
+  </div>
+</div>
+
+<div class="rip-bar">
+  <div class="rip-form">
+    <input type="url" class="rip-input" id="urlInput" placeholder="https://example.com/sales-page-with-embedded-video" />
+    <button class="rip-btn" id="ripBtn" onclick="startRip()">Rip Video</button>
+  </div>
+  <div class="progress-bar" id="progressBar">
+    <div class="step" id="step-fetch">
+      <span class="step-dot"></span>Fetching page
+    </div>
+    <div class="step" id="step-download">
+      <span class="step-dot"></span>Downloading video
+    </div>
+    <div class="step" id="step-rev">
+      <span class="step-dot"></span>Submitting to Rev
+    </div>
+    <div class="step" id="step-done">
+      <span class="step-dot"></span>Done
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="section-header">
+    <div class="section-title" id="jobCount">Jobs</div>
+    <button class="refresh-btn" onclick="loadJobs()">Refresh</button>
+  </div>
+  <div id="jobsContainer"></div>
+</div>
+
+<!-- Transcript modal -->
+<div class="modal-overlay" id="transcriptModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modalTitle">Transcript</div>
+      <button class="modal-close" onclick="closeModal()">&#x2715;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let activePolls = {};   // job_id -> intervalId
+
+// ── rip flow ─────────────────────────────────────────────────────────────
+
+async function startRip() {
+  const input = document.getElementById('urlInput');
+  const url = input.value.trim();
+  if (!url) { input.focus(); return; }
+
+  const btn = document.getElementById('ripBtn');
+  btn.disabled = true;
+  showProgress('fetching_page');
+
+  try {
+    const resp = await fetch(`${API}/api/rip`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const job = await resp.json();
+    if (!resp.ok) {
+      showProgressError(job.error || 'Unknown error');
+      btn.disabled = false;
+      return;
+    }
+    input.value = '';
+    // Poll the new job to update progress bar
+    pollJobProgress(job.id);
+    await loadJobs();
+  } catch (e) {
+    showProgressError(e.message);
+    btn.disabled = false;
+  }
+}
+
+async function pollJobProgress(jobId) {
+  const pollInterval = setInterval(async () => {
+    try {
+      const resp = await fetch(`${API}/api/jobs/${jobId}`);
+      const job = await resp.json();
+      const step = job.pipeline_step || 'queued';
+
+      if (step === 'fetching_page') showProgress('fetching_page');
+      else if (step === 'downloading_video') showProgress('downloading_video');
+      else if (step === 'submitting_to_rev') showProgress('submitting_to_rev');
+      else if (step === 'done') {
+        showProgress('done');
+        clearInterval(pollInterval);
+        document.getElementById('ripBtn').disabled = false;
+        await loadJobs();
+        setTimeout(() => hideProgress(), 3000);
+      } else if (step === 'failed') {
+        showProgressError(job.error || 'Pipeline failed');
+        clearInterval(pollInterval);
+        document.getElementById('ripBtn').disabled = false;
+        await loadJobs();
+      }
+    } catch (e) {
+      clearInterval(pollInterval);
+    }
+  }, 2000);
+}
+
+// ── progress bar ──────────────────────────────────────────────────────────
+
+function showProgress(step) {
+  const bar = document.getElementById('progressBar');
+  bar.classList.add('visible');
+  const steps = ['step-fetch', 'step-download', 'step-rev', 'step-done'];
+  const map = {
+    'fetching_page': 0,
+    'downloading_video': 1,
+    'submitting_to_rev': 2,
+    'done': 3,
+  };
+  const activeIdx = map[step] ?? -1;
+  steps.forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = 'step';
+    if (i < activeIdx) el.classList.add('done');
+    else if (i === activeIdx) el.classList.add('active');
+  });
+}
+
+function showProgressError(msg) {
+  const bar = document.getElementById('progressBar');
+  bar.classList.add('visible');
+  ['step-fetch','step-download','step-rev','step-done'].forEach(id => {
+    document.getElementById(id).className = 'step';
+  });
+  // Mark current step as error — find first non-done
+  const steps = bar.querySelectorAll('.step');
+  let marked = false;
+  steps.forEach(s => {
+    if (!marked && !s.classList.contains('done')) {
+      s.classList.add('error');
+      s.innerHTML = `<span class="step-dot"></span>${msg.substring(0,60)}`;
+      marked = true;
+    }
+  });
+}
+
+function hideProgress() {
+  document.getElementById('progressBar').classList.remove('visible');
+}
+
+// ── load jobs ─────────────────────────────────────────────────────────────
+
+async function loadJobs() {
+  try {
+    const resp = await fetch(`${API}/api/jobs`);
+    const jobs = await resp.json();
+    renderJobs(jobs);
+
+    // Set up polling for in-progress jobs
+    jobs.forEach(job => {
+      if (['pending','in_progress'].includes(job.rev_status) && job.pipeline_step === 'done') {
+        if (!activePolls[job.id]) {
+          activePolls[job.id] = setInterval(() => pollTranscript(job.id), 30000);
+        }
+      }
+    });
+  } catch (e) {
+    document.getElementById('jobsContainer').innerHTML =
+      `<div class="empty"><div class="empty-icon">&#9888;</div><div class="empty-msg">Could not load jobs: ${e.message}</div></div>`;
+  }
+}
+
+function renderJobs(jobs) {
+  const container = document.getElementById('jobsContainer');
+  const countEl = document.getElementById('jobCount');
+  countEl.textContent = jobs.length === 1 ? '1 Job' : `${jobs.length} Jobs`;
+
+  if (jobs.length === 0) {
+    container.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">&#127909;</div>
+        <div class="empty-msg">No videos ripped yet. Paste a URL above to get started.</div>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="grid">${jobs.map(cardHTML).join('')}</div>`;
+}
+
+function cardHTML(job) {
+  const platform = job.platform || 'unknown';
+  const revStatus = job.rev_status || 'pending';
+  const step = job.pipeline_step || 'queued';
+  const isRunning = !['done','failed',''].includes(step) || step === 'queued';
+
+  const thumbHTML = job.thumbnail_url
+    ? `<img class="card-thumb" src="${esc(job.thumbnail_url)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      + `<div class="card-thumb-placeholder" style="display:none">&#127909;</div>`
+    : `<div class="card-thumb-placeholder">&#127909;</div>`;
+
+  const pipelineHTML = isRunning
+    ? `<div class="pipeline-status"><span class="spinner"></span>${stepLabel(step)}</div>`
+    : '';
+
+  const errorHTML = job.error
+    ? `<div class="card-error">&#9888; ${esc(job.error)}</div>` : '';
+
+  const dlBtn = job.local_video
+    ? `<a class="btn-sm btn-dl" href="/data/videos/${job.id}.mp4" download>Download MP4</a>` : '';
+
+  const transcriptBtn = (job.rev_order_id && revStatus !== 'failed')
+    ? `<button class="btn-sm btn-transcript" onclick="openTranscript('${job.id}','${esc(job.title)}')">View Transcript</button>`
+    : '';
+
+  const date = job.created_at ? new Date(job.created_at).toLocaleString() : '';
+
+  return `
+<div class="card" id="card-${job.id}">
+  ${thumbHTML}
+  <div class="card-body">
+    <div class="card-meta">
+      <span class="platform-badge platform-${platform}">${platform}</span>
+      <span class="rev-badge rev-${revStatus}">${revStatusLabel(revStatus)}</span>
+    </div>
+    ${pipelineHTML}
+    <div class="card-title">${esc(job.title || job.source_url)}</div>
+    <div class="card-url"><a href="${esc(job.source_url)}" target="_blank" rel="noopener">${esc(job.source_url)}</a></div>
+    <div class="card-date">${date}</div>
+    <div class="card-actions">
+      ${dlBtn}
+      ${transcriptBtn}
+      <button class="btn-sm btn-delete" onclick="deleteJob('${job.id}')">Delete</button>
+    </div>
+    ${errorHTML}
+  </div>
+</div>`;
+}
+
+function stepLabel(step) {
+  const map = {
+    queued: 'Queued...',
+    fetching_page: 'Fetching page...',
+    downloading_video: 'Downloading video...',
+    submitting_to_rev: 'Submitting to Rev...',
+    done: 'Done',
+    failed: 'Failed',
+  };
+  return map[step] || step;
+}
+
+function revStatusLabel(s) {
+  return {pending:'Pending',in_progress:'Transcribing',complete:'Transcript Ready',failed:'Failed'}[s] || s;
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+// ── transcript ────────────────────────────────────────────────────────────
+
+async function openTranscript(jobId, title) {
+  document.getElementById('modalTitle').textContent = title || 'Transcript';
+  document.getElementById('modalBody').textContent = 'Loading...';
+  document.getElementById('transcriptModal').classList.add('open');
+
+  try {
+    const resp = await fetch(`${API}/api/jobs/${jobId}/transcript`);
+    const data = await resp.json();
+
+    if (resp.status === 202) {
+      document.getElementById('modalBody').textContent =
+        `Transcript not ready yet (status: ${data.status}). Check back soon.`;
+      return;
+    }
+    if (!resp.ok) {
+      document.getElementById('modalBody').textContent =
+        `Error: ${data.error || 'Unknown error'}`;
+      return;
+    }
+    document.getElementById('modalBody').textContent = data.transcript || '(empty transcript)';
+    // Refresh cards so status badge updates
+    loadJobs();
+  } catch (e) {
+    document.getElementById('modalBody').textContent = `Error: ${e.message}`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('transcriptModal').classList.remove('open');
+}
+
+document.getElementById('transcriptModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// ── delete ────────────────────────────────────────────────────────────────
+
+async function deleteJob(jobId) {
+  if (!confirm('Delete this video and transcript?')) return;
+  try {
+    const resp = await fetch(`${API}/api/jobs/${jobId}`, {method: 'DELETE'});
+    if (!resp.ok) { alert('Delete failed'); return; }
+    if (activePolls[jobId]) { clearInterval(activePolls[jobId]); delete activePolls[jobId]; }
+    await loadJobs();
+  } catch (e) {
+    alert(`Delete error: ${e.message}`);
+  }
+}
+
+// ── poll in-progress transcripts ──────────────────────────────────────────
+
+async function pollTranscript(jobId) {
+  try {
+    const resp = await fetch(`${API}/api/jobs/${jobId}`);
+    const job = await resp.json();
+    const s = job.rev_status;
+    if (s === 'complete' || s === 'failed') {
+      clearInterval(activePolls[jobId]);
+      delete activePolls[jobId];
+      await loadJobs();
+    }
+  } catch (e) {
+    clearInterval(activePolls[jobId]);
+    delete activePolls[jobId];
+  }
+}
+
+// ── keyboard shortcut ─────────────────────────────────────────────────────
+document.getElementById('urlInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') startRip();
+});
+
+// ── init ──────────────────────────────────────────────────────────────────
+loadJobs();
+</script>
+</body>
+</html>

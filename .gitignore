@@ -1,0 +1,9 @@
+data/videos/*.mp4
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+*.egg-info/
+dist/
+.DS_Store

@@ -99,10 +99,19 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         platform, video_id, extra = ripper.detect_platform(html, source_url)
         if platform == 'unknown':
             _update_job(job_id, {'pipeline_step': 'fetching_page_rendered'})
-            html, title_r, thumbnail_r = ripper.fetch_page_rendered(source_url)
+            html, title_r, thumbnail_r, bc_attrs = ripper.fetch_page_rendered(source_url)
             if title_r and title_r != source_url:
                 _update_job(job_id, {'title': title_r, 'thumbnail_url': thumbnail_r})
-            platform, video_id, extra = ripper.detect_platform(html, source_url)
+            # If Playwright found BrightCove attrs directly in the DOM, use them
+            if bc_attrs and bc_attrs.get('video_id') and bc_attrs.get('account_id'):
+                platform = 'brightcove'
+                video_id = bc_attrs['video_id']
+                extra = {
+                    'bc_account_id': bc_attrs['account_id'],
+                    'bc_player_id': bc_attrs.get('player_id', ''),
+                }
+            else:
+                platform, video_id, extra = ripper.detect_platform(html, source_url)
         _update_job(job_id, {
             'platform': platform,
             'video_id': video_id,

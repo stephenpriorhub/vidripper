@@ -54,32 +54,56 @@ HEADERS = {
 }
 
 
-def fetch_page_rendered(url: str) -> tuple[str, str, str]:
+def fetch_page_rendered(url: str) -> tuple[str, str, str, dict]:
     """
-    Render a page in headless Chromium via Playwright and return (html, title, og_image_url).
-    Waits for BrightCove attributes to appear in the DOM before extracting.
+    Render a page in headless Chromium via Playwright.
+    Returns (html, title, og_image_url, brightcove_attrs).
+    brightcove_attrs may contain {video_id, account_id, player_id} if found directly in DOM.
     """
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox'],
+        )
+        context = browser.new_context(
+            user_agent=(
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+            viewport={'width': 1280, 'height': 800},
+        )
+        page = context.new_page()
         page.goto(url, wait_until='networkidle', timeout=30000)
-        # Wait up to 15s for BrightCove attributes to appear in the DOM
+
+        # Wait for BrightCove video element (video-js tag or any element with data-video-id + data-account)
+        bc_attrs = {}
         try:
             page.wait_for_selector('[data-video-id][data-account]', timeout=15000)
+            bc_attrs = page.evaluate("""() => {
+                const el = document.querySelector('[data-video-id][data-account]')
+                        || document.querySelector('video-js[data-video-id]');
+                if (!el) return {};
+                return {
+                    video_id: el.getAttribute('data-video-id') || '',
+                    account_id: el.getAttribute('data-account') || '',
+                    player_id: el.getAttribute('data-player') || '',
+                };
+            }""")
         except Exception:
             try:
                 page.wait_for_selector('[data-video-id]', timeout=5000)
             except Exception:
-                pass  # proceed anyway, may have found other video types
+                pass
+
         html = page.content()
         title = page.title() or url
-        # Try og:image
         thumbnail = page.evaluate(
             "document.querySelector('meta[property=\"og:image\"]')?.content || ''"
         )
         browser.close()
-    return html, title, thumbnail
+    return html, title, thumbnail, bc_attrs
 
 
 def fetch_page(url: str) -> tuple[str, str, str]:

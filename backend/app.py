@@ -17,7 +17,10 @@ import rev_client
 # ── paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / 'frontend'
-DATA_DIR = BASE_DIR / 'data'
+# DATA_DIR: use /data (Railway volume mount point) when it exists, else fall
+# back to the repo-relative data/ dir for local dev.
+_volume = Path('/data')
+DATA_DIR = _volume if _volume.is_dir() else BASE_DIR / 'data'
 VIDEOS_DIR = DATA_DIR / 'videos'
 MANIFEST_PATH = DATA_DIR / 'manifest.json'
 

@@ -75,12 +75,15 @@ def fetch_page_rendered(url: str) -> tuple[str, str, str, dict]:
             viewport={'width': 1280, 'height': 800},
         )
         page = context.new_page()
-        page.goto(url, wait_until='networkidle', timeout=30000)
+        try:
+            page.goto(url, wait_until='domcontentloaded', timeout=30000)
+        except Exception:
+            pass  # timeout is fine — grab whatever rendered
 
         # Wait for BrightCove video element (video-js tag or any element with data-video-id + data-account)
         bc_attrs = {}
         try:
-            page.wait_for_selector('[data-video-id][data-account]', timeout=15000)
+            page.wait_for_selector('[data-video-id][data-account]', timeout=20000)
             bc_attrs = page.evaluate("""() => {
                 const el = document.querySelector('[data-video-id][data-account]')
                         || document.querySelector('video-js[data-video-id]');

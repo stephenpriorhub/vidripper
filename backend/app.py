@@ -111,11 +111,10 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             'pipeline_step': 'submitting_to_rev',
         })
 
-        # Step 4: Rev — tell Rev to fetch the video, then place transcription order
+        # Step 4: Rev AI — submit video URL directly, no upload needed
         app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
         video_url = f'{app_base}/api/jobs/{job_id}/video'
-        input_uri = rev_client.submit_input(video_url, f'{job_id}.mp4')
-        order_id = rev_client.submit_order(input_uri, f'{job_id}.mp4')
+        order_id = rev_client.submit_job(video_url, metadata=job_id)
         _update_job(job_id, {
             'rev_order_id': order_id,
             'rev_status': 'in_progress',
@@ -209,7 +208,7 @@ def get_transcript(job_id):
         return jsonify({'error': 'No Rev order associated with this job'}), 400
 
     try:
-        status = rev_client.get_order_status(order_id)
+        status = rev_client.get_job_status(order_id)
         _update_job(job_id, {'rev_status': status})
 
         if status != 'complete':
@@ -217,7 +216,7 @@ def get_transcript(job_id):
 
         text = rev_client.get_transcript(order_id)
         _update_job(job_id, {'transcript_text': text, 'rev_status': 'complete'})
-        return jsonify({'transcript': text, 'source': 'rev'})
+        return jsonify({'transcript': text, 'source': 'revai'})
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500

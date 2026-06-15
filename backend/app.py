@@ -87,9 +87,12 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
     Runs in a background thread; updates manifest at each step.
     """
     try:
-        # Step 1: fetch page
+        # Step 1: fetch page (skip for direct BrightCove player URLs — no useful metadata there)
         _update_job(job_id, {'pipeline_step': 'fetching_page'})
-        html, title, thumbnail = ripper.fetch_page(source_url)
+        if 'players.brightcove.net' in source_url:
+            html, title, thumbnail = '', source_url, ''
+        else:
+            html, title, thumbnail = ripper.fetch_page(source_url)
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
         # Step 2: detect platform

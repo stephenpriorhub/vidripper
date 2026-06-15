@@ -49,8 +49,9 @@ def submit_order(input_uri: str, filename: str = 'video.mp4') -> str:
     Returns the Rev order_number.
     """
     payload = {
-        'automated_transcription': {
+        'transcription_options': {
             'inputs': [{'uri': input_uri}],
+            'output_file_formats': ['DocX', 'Txt'],
         }
     }
     resp = requests.post(

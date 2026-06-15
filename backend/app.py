@@ -87,10 +87,36 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
     Runs in a background thread; updates manifest at each step.
     """
     try:
-        # Step 1: fetch page (skip for direct BrightCove player URLs — no useful metadata there)
+        # Step 1: fetch page (skip for direct player URLs — no useful metadata there)
         _update_job(job_id, {'pipeline_step': 'fetching_page'})
         if 'players.brightcove.net' in source_url:
             html, title, thumbnail = '', source_url, ''
+        elif 'fast.wistia.com/medias/' in source_url or 'wistia.com/medias/' in source_url:
+            # Direct Wistia media URL — extract ID from URL, skip page fetch
+            import re as _re
+            _m = _re.search(r'wistia\.com/medias/([a-z0-9]+)', source_url)
+            html, title, thumbnail = '', source_url, ''
+            if _m:
+                _update_job(job_id, {
+                    'platform': 'wistia',
+                    'video_id': _m.group(1),
+                    'pipeline_step': 'downloading_video',
+                })
+                dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
+                ripper.download_video('wistia', _m.group(1), source_url, dest_path, {})
+                _update_job(job_id, {
+                    'local_video': f'/data/videos/{job_id}.mp4',
+                    'pipeline_step': 'submitting_to_rev',
+                })
+                app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
+                video_url = f'{app_base}/api/jobs/{job_id}/video'
+                order_id = rev_client.submit_job(video_url, metadata=job_id)
+                _update_job(job_id, {
+                    'rev_order_id': order_id,
+                    'rev_status': 'in_progress',
+                    'pipeline_step': 'done',
+                })
+                return
         else:
             html, title, thumbnail = ripper.fetch_page(source_url)
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
@@ -204,7 +230,7 @@ def list_jobs():
 def get_job(job_id):
     job = _get_job(job_id)
     if not job:
-        abort(404)
+        return jsonify({'error': 'Job not found', 'id': job_id}), 404
     return jsonify(job)
 
 
@@ -212,7 +238,7 @@ def get_job(job_id):
 def get_transcript(job_id):
     job = _get_job(job_id)
     if not job:
-        abort(404)
+        return jsonify({'error': 'Job not found', 'id': job_id}), 404
 
     # Return cached transcript if present
     if job.get('transcript_text'):
@@ -241,7 +267,7 @@ def get_transcript(job_id):
 def serve_video(job_id):
     video_path = VIDEOS_DIR / f'{job_id}.mp4'
     if not video_path.exists():
-        abort(404)
+        return jsonify({'error': 'Job not found', 'id': job_id}), 404
     return send_from_directory(str(VIDEOS_DIR), f'{job_id}.mp4', mimetype='video/mp4')
 
 
@@ -249,7 +275,7 @@ def serve_video(job_id):
 def delete_job(job_id):
     job = _get_job(job_id)
     if not job:
-        abort(404)
+        return jsonify({'error': 'Job not found', 'id': job_id}), 404
 
     # Remove video file if present
     video_path = VIDEOS_DIR / f'{job_id}.mp4'

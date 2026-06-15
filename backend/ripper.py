@@ -119,7 +119,7 @@ def fetch_page(url: str) -> tuple[str, str, str]:
     # Page title — prefer og:title, fall back to <title>
     og_title = soup.find('meta', property='og:title')
     title = (og_title['content'] if og_title and og_title.get('content')
-             else ((soup.title.string or '').strip() or url))
+             else ((soup.title.string if soup.title else None) or '').strip() or url)
 
     # Thumbnail — og:image
     og_image = soup.find('meta', property='og:image')

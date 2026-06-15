@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+buildCommand = "pip install playwright && playwright install chromium --with-deps"
 
 [deploy]
 startCommand = "python backend/serve.py"

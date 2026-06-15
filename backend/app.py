@@ -95,8 +95,14 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             html, title, thumbnail = ripper.fetch_page(source_url)
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
-        # Step 2: detect platform
+        # Step 2: detect platform — if unknown, retry with headless browser
         platform, video_id, extra = ripper.detect_platform(html, source_url)
+        if platform == 'unknown':
+            _update_job(job_id, {'pipeline_step': 'fetching_page_rendered'})
+            html, title_r, thumbnail_r = ripper.fetch_page_rendered(source_url)
+            if title_r and title_r != source_url:
+                _update_job(job_id, {'title': title_r, 'thumbnail_url': thumbnail_r})
+            platform, video_id, extra = ripper.detect_platform(html, source_url)
         _update_job(job_id, {
             'platform': platform,
             'video_id': video_id,

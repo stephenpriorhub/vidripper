@@ -54,6 +54,31 @@ HEADERS = {
 }
 
 
+def fetch_page_rendered(url: str) -> tuple[str, str, str]:
+    """
+    Render a page in headless Chromium via Playwright and return (html, title, og_image_url).
+    Waits for BrightCove attributes to appear in the DOM before extracting.
+    """
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, wait_until='networkidle', timeout=30000)
+        # Wait up to 10s for BrightCove attributes to appear
+        try:
+            page.wait_for_selector('[data-video-id]', timeout=10000)
+        except Exception:
+            pass  # proceed anyway, may have found other video types
+        html = page.content()
+        title = page.title() or url
+        # Try og:image
+        thumbnail = page.evaluate(
+            "document.querySelector('meta[property=\"og:image\"]')?.content || ''"
+        )
+        browser.close()
+    return html, title, thumbnail
+
+
 def fetch_page(url: str) -> tuple[str, str, str]:
     """
     Fetch a page and return (html, page_title, og_image_url).

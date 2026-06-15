@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory, abort
+from flask import Flask, jsonify, request, send_from_directory, abort, Response
 
 import ripper
 import rev_client

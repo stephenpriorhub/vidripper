@@ -24,9 +24,9 @@ PATTERNS = {
         r'wistia\.com/medias/([a-z0-9]+)',
     ],
     'brightcove': [
-        r'data-video-id=["\'](\d{10,})["\']',
-        r'"videoId"\s*:\s*"(\d{10,})"',
-        r'videoId=(\d{10,})',
+        r'data-video-id=["\'](\d{7,})["\']',
+        r'"videoId"\s*:\s*"(\d{7,})"',
+        r'videoId=(\d{7,})',
     ],
     'vidalytics': [
         r'vidalytics\.com/embed/([A-Za-z0-9_-]+)',
@@ -135,9 +135,15 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
         if extra.get('bc_direct_url'):
             return extra['bc_direct_url']
         account = extra.get('bc_account_id', '')
-        player = extra.get('bc_player_id', 'default')
+        player = extra.get('bc_player_id', '')
         if account and video_id:
-            return (f'https://players.brightcove.net/{account}/{player}_default'
+            if player:
+                # Named player: append _default suffix as BrightCove requires
+                player_path = f'{player}_default'
+            else:
+                # No player ID found — use BrightCove's bare default path
+                player_path = 'default'
+            return (f'https://players.brightcove.net/{account}/{player_path}'
                     f'/index.html?videoId={video_id}')
         return source_url
     elif platform == 'vidalytics':

@@ -64,11 +64,14 @@ def fetch_page_rendered(url: str) -> tuple[str, str, str]:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(url, wait_until='networkidle', timeout=30000)
-        # Wait up to 10s for BrightCove attributes to appear
+        # Wait up to 15s for BrightCove attributes to appear in the DOM
         try:
-            page.wait_for_selector('[data-video-id]', timeout=10000)
+            page.wait_for_selector('[data-video-id][data-account]', timeout=15000)
         except Exception:
-            pass  # proceed anyway, may have found other video types
+            try:
+                page.wait_for_selector('[data-video-id]', timeout=5000)
+            except Exception:
+                pass  # proceed anyway, may have found other video types
         html = page.content()
         title = page.title() or url
         # Try og:image
@@ -136,15 +139,11 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
                         if m:
                             extra['bc_player_id'] = m.group(1)
                             break
-                    # If we found a video ID but no account ID, the page is a SPA —
-                    # we can't build the player URL without the account
+                    # If we found a video ID but no account ID, the page likely needs
+                    # JS rendering to expose the full BrightCove attributes — return
+                    # unknown so the caller can retry with a headless browser.
                     if not extra.get('bc_account_id'):
-                        raise ValueError(
-                            'BrightCove SPA detected — video ID is loaded by JavaScript and '
-                            'cannot be extracted from static HTML. Open the page in Chrome, '
-                            'open DevTools → Network tab, reload, filter by "brightcove.net", '
-                            'and paste the players.brightcove.net URL directly into VidRipper.'
-                        )
+                        return 'unknown', '', {}
                 return platform, match.group(1), extra
 
     return 'unknown', '', {}

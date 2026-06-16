@@ -54,11 +54,53 @@ HEADERS = {
 }
 
 
+def _load_cookies_for_playwright(url: str) -> list:
+    """
+    Load a Netscape cookies.txt file and convert to Playwright cookie dicts.
+    Tries domain-specific file first (e.g. investorplace.txt), then cookies.txt.
+    """
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.lstrip('www.')
+    # strip subdomains to get root domain, e.g. secure.investorplace.com → investorplace.com
+    parts = domain.split('.')
+    root = '.'.join(parts[-2:]) if len(parts) >= 2 else domain
+
+    candidates = [
+        COOKIES_DIR / f'{root}.txt',
+        COOKIES_DIR / f'{domain}.txt',
+        COOKIES_DIR / 'cookies.txt',
+    ]
+    cookies_path = next((p for p in candidates if p.exists()), None)
+    if not cookies_path:
+        return []
+
+    cookies = []
+    with open(cookies_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) < 7:
+                continue
+            domain_val, _, path, secure, expires, name, value = parts[:7]
+            cookies.append({
+                'name': name,
+                'value': value,
+                'domain': domain_val,
+                'path': path,
+                'secure': secure.upper() == 'TRUE',
+                'sameSite': 'None',
+            })
+    return cookies
+
+
 def fetch_page_rendered(url: str) -> tuple[str, str, str, dict]:
     """
     Render a page in headless Chromium via Playwright.
     Returns (html, title, og_image_url, brightcove_attrs).
     brightcove_attrs may contain {video_id, account_id, player_id} if found directly in DOM.
+    Loads cookies from data/cookies/ so gated pages render correctly.
     """
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -74,6 +116,9 @@ def fetch_page_rendered(url: str) -> tuple[str, str, str, dict]:
             ),
             viewport={'width': 1280, 'height': 800},
         )
+        pw_cookies = _load_cookies_for_playwright(url)
+        if pw_cookies:
+            context.add_cookies(pw_cookies)
         page = context.new_page()
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=30000)
@@ -251,7 +296,16 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
             timeout=300,
         )
         if result.returncode != 0:
-            raise RuntimeError(f'yt-dlp failed: {result.stderr[:500]}')
+            err = result.stderr[:500]
+            if 'Unsupported URL' in err:
+                raise RuntimeError(
+                    'Could not extract video — the page requires login or is not publicly accessible. '
+                    'For InvestorPlace BrightCove videos: open Chrome DevTools → Network tab → '
+                    'reload the page → filter by "brightcove.net" → copy the players.brightcove.net '
+                    'URL and paste it directly into VidRipper. '
+                    f'(yt-dlp: {err[:200]})'
+                )
+            raise RuntimeError(f'yt-dlp failed: {err}')
 
         # Find the downloaded file
         files = list(Path(tmp_dir).glob('video.*'))

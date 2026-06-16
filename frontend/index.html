@@ -112,6 +112,11 @@ body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:10
     <input type="url" class="rip-input" id="urlInput" placeholder="https://example.com/sales-page-with-embedded-video" />
     <button class="rip-btn" id="ripBtn" onclick="startRip()">Rip Video</button>
   </div>
+  <div style="margin-top:10px;font-size:.78rem;color:#8b949e">
+    <strong style="color:#e6edf3">BrightCove pages (InvestorPlace, etc.):</strong>
+    drag this to your bookmarks bar, then click it while on the video page:
+    <a id="bookmarklet" href="" style="display:inline-block;margin-left:8px;background:#1f6feb;color:#fff;padding:3px 10px;border-radius:4px;text-decoration:none;font-size:.78rem;font-weight:600">&#127909; Rip This Video</a>
+  </div>
   <div class="progress-bar" id="progressBar">
     <div class="step" id="step-fetch">
       <span class="step-dot"></span>Fetching page
@@ -150,6 +155,31 @@ body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:10
 <script>
 const API = '';
 let activePolls = {};   // job_id -> intervalId
+
+// ── bookmarklet ───────────────────────────────────────────────────────────
+(function() {
+  const VRDOMAIN = window.location.origin;
+  const bm = `javascript:(function(){
+    var el=document.querySelector('[data-video-id][data-account]')||document.querySelector('video-js[data-video-id]');
+    if(!el){alert('No BrightCove video found on this page. Make sure the video has loaded first.');return;}
+    var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account'),player=el.getAttribute('data-player')||'default';
+    var url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
+    window.open('${VRDOMAIN}/?url='+encodeURIComponent(url),'_blank');
+  })();`;
+  document.getElementById('bookmarklet').href = bm;
+})();
+
+// ── auto-submit from ?url= param (used by bookmarklet) ───────────────────
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const preUrl = params.get('url');
+  if (preUrl) {
+    history.replaceState({}, '', '/');
+    document.getElementById('urlInput').value = preUrl;
+    // Small delay so the page renders first
+    setTimeout(startRip, 400);
+  }
+})();
 
 // ── rip flow ─────────────────────────────────────────────────────────────
 

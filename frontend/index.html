@@ -475,8 +475,9 @@ function cardHTML(job) {
     if (job.promo_review_id) {
       analyzeBtn = `<a class="btn-sm btn-view-analysis" href="${PROMO_ANALYZER_URL}/reviews/${job.promo_review_id}" target="_blank" rel="noopener">View Analysis</a>`;
     } else {
-      const analyzing = job._analyzing ? ' analyzing" disabled' : '"';
-      analyzeBtn = `<button class="btn-sm btn-analyze${analyzing} id="analyze-${job.id}" onclick="analyzeTranscript('${job.id}')">Analyze</button>`;
+      const analyzingClass = job._analyzing ? ' analyzing' : '';
+      const analyzingDisabled = job._analyzing ? ' disabled' : '';
+      analyzeBtn = `<button class="btn-sm btn-analyze${analyzingClass}"${analyzingDisabled} id="analyze-${job.id}" onclick="analyzeTranscript('${job.id}')">Analyze</button>`;
     }
   }
 
@@ -600,13 +601,6 @@ async function analyzeTranscript(jobId) {
   if (btn) { btn.textContent = 'Analyzing...'; btn.disabled = true; btn.classList.add('analyzing'); }
 
   try {
-    // 1. Fetch transcript text
-    const tResp = await fetch(`${API}/api/jobs/${jobId}/transcript`);
-    const tData = await tResp.json();
-    if (!tResp.ok || !tData.transcript) {
-      throw new Error(tData.error || 'No transcript available');
-    }
-
     const aResp = await fetch(`${API}/api/jobs/${jobId}/analyze-proxy`, {
       method: 'POST',
     });

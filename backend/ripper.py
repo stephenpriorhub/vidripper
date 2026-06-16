@@ -120,10 +120,24 @@ def fetch_page_rendered(url: str) -> tuple[str, str, str, dict]:
         if pw_cookies:
             context.add_cookies(pw_cookies)
         page = context.new_page()
+
+        # Apply stealth patches to avoid bot/WAF detection
+        try:
+            from playwright_stealth import stealth_sync
+            stealth_sync(page)
+        except ImportError:
+            pass
+
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=30000)
         except Exception:
             pass  # timeout is fine — grab whatever rendered
+
+        # Give JS frameworks extra time to bootstrap and make API calls
+        try:
+            page.wait_for_load_state('networkidle', timeout=10000)
+        except Exception:
+            pass
 
         # Wait for BrightCove video element (video-js tag or any element with data-video-id + data-account)
         bc_attrs = {}

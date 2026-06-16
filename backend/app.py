@@ -187,7 +187,9 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                     'pipeline_step': 'taking_screenshot',
                 })
                 job = _get_job(job_id)
-                _take_screenshot(job_id, job.get('page_url') or source_url)
+                # Skip screenshot for bookmarklet jobs — gated pages return CAPTCHAs; og:image thumbnail is used instead
+                if not job or not job.get('page_url'):
+                    _take_screenshot(job_id, job.get('page_url') or source_url if job else source_url)
                 _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
@@ -236,8 +238,10 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         })
 
         # Step 4: screenshot (non-blocking on failure)
+        # Skip for bookmarklet jobs — gated pages return CAPTCHAs; og:image thumbnail is used instead
         job = _get_job(job_id)
-        _take_screenshot(job_id, job.get('page_url') or source_url)
+        if not job or not job.get('page_url'):
+            _take_screenshot(job_id, job.get('page_url') or source_url if job else source_url)
         _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
 
         # Step 5: Rev AI — submit video URL directly, no upload needed

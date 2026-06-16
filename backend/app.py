@@ -186,7 +186,8 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                     'local_video': f'/data/videos/{job_id}.mp4',
                     'pipeline_step': 'taking_screenshot',
                 })
-                _take_screenshot(job_id, source_url)
+                job = _get_job(job_id)
+                _take_screenshot(job_id, job.get('page_url') or source_url)
                 _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
@@ -235,7 +236,8 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         })
 
         # Step 4: screenshot (non-blocking on failure)
-        _take_screenshot(job_id, source_url)
+        job = _get_job(job_id)
+        _take_screenshot(job_id, job.get('page_url') or source_url)
         _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
 
         # Step 5: Rev AI — submit video URL directly, no upload needed
@@ -287,9 +289,12 @@ def rip():
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    page_url = (data.get('page_url') or '').strip() or None
+
     job = {
         'id': job_id,
         'source_url': url,
+        'page_url': page_url,
         'platform': 'unknown',
         'video_id': '',
         'title': '',
@@ -429,6 +434,57 @@ def delete_job(job_id):
     _delete_job(job_id)
     return jsonify({'deleted': True, 'id': job_id})
 
+
+
+@app.route('/api/jobs/<job_id>/analyze-proxy', methods=['POST'])
+def analyze_proxy(job_id):
+    """Proxy transcript to Promo Analyzer to avoid CORS."""
+    import requests as _requests
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    text = job.get('transcript_text', '')
+    if not text:
+        return jsonify({'error': 'Transcript not available yet'}), 400
+    
+    title = job.get('title', '') or job_id
+    try:
+        docx_bytes = _build_docx(title, text)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    
+    safe_title = ''.join(c for c in title[:40] if c.isalnum() or c in ' -_').strip() or job_id
+    filename = f'{safe_title}.docx'
+    
+    analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
+    try:
+        resp = _requests.post(
+            analyzer_url,
+            files={'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')},
+            timeout=120,
+            stream=True,
+        )
+    except Exception as exc:
+        return jsonify({'error': f'Failed to reach analyzer: {exc}'}), 502
+    
+    # Read full response, extract [META]{reviewId}[/META]
+    full_text = resp.text
+    import re as _re
+    meta_match = _re.search(r'\[META\](.*?)\[/META\]', full_text, _re.DOTALL)
+    review_id = None
+    if meta_match:
+        try:
+            meta = json.loads(meta_match.group(1))
+            review_id = meta.get('reviewId')
+        except Exception:
+            pass
+    
+    if not review_id:
+        return jsonify({'error': 'Analyzer did not return a review ID', 'raw': full_text[:500]}), 500
+    
+    _update_job(job_id, {'promo_review_id': review_id})
+    return jsonify({'review_id': review_id})
 
 @app.route('/api/jobs/<job_id>/set-review', methods=['POST'])
 def set_review(job_id):

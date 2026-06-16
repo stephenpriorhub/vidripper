@@ -90,7 +90,7 @@ body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:10
 /* ── transcription progress bar on card ── */
 .transcription-progress{margin-bottom:8px}
 .transcription-progress-bar{height:4px;background:#21262d;border-radius:2px;overflow:hidden;margin-top:3px}
-.transcription-progress-fill{height:100%;background:#58a6ff;border-radius:2px;transition:width 3s linear}
+.transcription-progress-fill{height:100%;background:#58a6ff;border-radius:2px}
 .transcription-progress-label{font-size:.68rem;color:#8b949e;display:flex;justify-content:space-between}
 
 /* ── modal ── */
@@ -205,18 +205,20 @@ let transcriptionProgress = {}; // job_id -> { submittedAt, pct }
       var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account'),player=el.getAttribute('data-player')||'default';
       url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
     }
-    window.open('${VRDOMAIN}/?url='+encodeURIComponent(url),'_blank');
+    var pu=encodeURIComponent(window.location.href);window.open('${VRDOMAIN}/?url='+encodeURIComponent(url)+'&page_url='+pu,'_blank');
   })();`;
   document.getElementById('bookmarklet').href = bm;
 })();
 
 // ── auto-submit from ?url= param (used by bookmarklet) ───────────────────
+let prefillPageUrl = null;
 (function() {
   const params = new URLSearchParams(window.location.search);
-  const preUrl = params.get('url');
-  if (preUrl) {
+  const prefillUrl = params.get('url');
+  prefillPageUrl = params.get('page_url');
+  if (prefillUrl) {
     history.replaceState({}, '', '/');
-    document.getElementById('urlInput').value = preUrl;
+    document.getElementById('urlInput').value = prefillUrl;
     setTimeout(startRip, 400);
   }
 })();
@@ -237,7 +239,7 @@ async function startRip() {
     const resp = await fetch(`${API}/api/rip`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url}),
+      body: JSON.stringify({url, ...(prefillPageUrl ? {page_url: prefillPageUrl} : {})}),
     });
     const data = await resp.json();
 
@@ -606,44 +608,16 @@ async function analyzeTranscript(jobId) {
       throw new Error(tData.error || 'No transcript available');
     }
 
-    // 2. Get job title for filename
-    const jResp = await fetch(`${API}/api/jobs/${jobId}`);
-    const job = await jResp.json();
-    const filename = ((job.title || jobId).substring(0, 60).replace(/[^\w\s-]/g, '') + '.txt').trim() || 'transcript.txt';
-
-    // 3. Submit transcript as a .txt file to Promo Analyzer /api/analyze
-    const blob = new Blob([tData.transcript], {type: 'text/plain'});
-    const formData = new FormData();
-    formData.append('file', blob, filename);
-
-    const aResp = await fetch(`${PROMO_ANALYZER_URL}/api/analyze`, {
+    const aResp = await fetch(`${API}/api/jobs/${jobId}/analyze-proxy`, {
       method: 'POST',
-      body: formData,
     });
 
-    if (!aResp.ok && !aResp.headers.get('content-type')?.includes('text')) {
-      throw new Error(`Analyzer returned ${aResp.status}`);
+    const aData = await aResp.json();
+    if (!aResp.ok) {
+      throw new Error(aData.error || `Analyzer returned ${aResp.status}`);
     }
 
-    // 4. Stream response, look for [META]{...}[/META] at end
-    const reader = aResp.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      fullText += decoder.decode(value, { stream: true });
-    }
-
-    const metaMatch = fullText.match(/\[META\](.*?)\[\/META\]/s);
-    let reviewId = null;
-    if (metaMatch) {
-      try {
-        const meta = JSON.parse(metaMatch[1]);
-        reviewId = meta.reviewId || null;
-      } catch {}
-    }
-
+    const reviewId = aData.review_id || null;
     if (!reviewId) {
       throw new Error('Analysis completed but no review ID returned');
     }

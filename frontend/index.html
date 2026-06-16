@@ -653,23 +653,25 @@ async function deleteJob(jobId) {
 
 async function pollTranscript(jobId) {
   try {
+    // Sync actual Rev AI status into manifest
+    await fetch(`${API}/api/jobs/${jobId}/transcript`);
+    // Read updated job
     const resp = await fetch(`${API}/api/jobs/${jobId}`);
     const job = await resp.json();
     const s = job.rev_status;
-
-    // Update % bar in-place if card is visible
-    if (s === 'in_progress') {
-      const fillEl = document.getElementById(`tpf-${jobId}`);
-      if (fillEl) {
-        const pct = estimateTranscriptionPct(job);
-        if (pct !== null) fillEl.style.width = pct + '%';
-      }
-    }
 
     if (s === 'complete' || s === 'failed') {
       clearInterval(activePolls[jobId]);
       delete activePolls[jobId];
       await loadJobs();
+      return;
+    }
+
+    // Still in progress — update bar
+    const fillEl = document.getElementById(`tpf-${jobId}`);
+    if (fillEl) {
+      const pct = estimateTranscriptionPct(job);
+      if (pct !== null) fillEl.style.width = pct + '%';
     }
   } catch (e) {
     clearInterval(activePolls[jobId]);

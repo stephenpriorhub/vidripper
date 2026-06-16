@@ -352,6 +352,8 @@ def get_transcript(job_id):
         status = rev_client.get_job_status(order_id)
         _update_job(job_id, {'rev_status': status})
 
+        if status == 'failed':
+            return jsonify({'error': 'Transcription failed in Rev AI', 'status': 'failed'}), 500
         if status != 'complete':
             return jsonify({'status': status, 'message': 'Transcript not ready yet'}), 202
 

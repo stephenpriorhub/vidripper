@@ -199,14 +199,59 @@ let transcriptionProgress = {}; // job_id -> { submittedAt, pct }
 (function() {
   const VRDOMAIN = window.location.origin;
   const bm = `javascript:(function(){
-    var url=window.location.href;
-    var el=document.querySelector('[data-video-id][data-account]')||document.querySelector('video-js[data-video-id]');
-    if(el){
-      var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account'),player=el.getAttribute('data-player')||'default';
-      url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
+  var orig=window.location.href;
+  var url=orig;
+  function findWistia(doc){
+    try{
+      var el=doc.querySelector('[class*="wistia_async_"]');
+      if(el){var m=el.className.match(/wistia_async_([a-z0-9]+)/);if(m)return 'https://fast.wistia.com/medias/'+m[1];}
+      var scripts=doc.querySelectorAll('script');
+      for(var i=0;i<scripts.length;i++){
+        var src=scripts[i].src||'';
+        var m2=src.match(/fast\.wistia\.com\/medias\/([a-z0-9]+)/);
+        if(m2) return 'https://fast.wistia.com/medias/'+m2[1];
+        var t=scripts[i].textContent||'';
+        var m3=t.match(/wistia_async_([a-z0-9]+)/)||t.match(/[\"']?hashedId[\"']?\s*[:=]\s*[\"']([a-z0-9]+)[\"']/)||t.match(/fast\.wistia\.com\/medias\/([a-z0-9]+)/);
+        if(m3) return 'https://fast.wistia.com/medias/'+m3[1];
+      }
+    }catch(e){}
+    return null;
+  }
+  function findBC(doc){
+    try{
+      var el=doc.querySelector('[data-video-id][data-account]')||doc.querySelector('video-js[data-video-id]')||doc.querySelector('[data-video-id]');
+      if(el){
+        var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account')||'',player=el.getAttribute('data-player')||'default';
+        if(vid&&acc) return 'https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
+      }
+      var scripts=doc.querySelectorAll('script');
+      for(var i=0;i<scripts.length;i++){
+        var t=scripts[i].textContent||'';
+        var m=t.match(/[\"']?videoId[\"']?\s*[:=]\s*[\"']?(\d{10,})[\"']?/);
+        var a=t.match(/[\"']?accountId[\"']?\s*[:=]\s*[\"']?(\d{8,})[\"']?/);
+        if(m&&a) return 'https://players.brightcove.net/'+a[1]+'/default_default/index.html?videoId='+m[1];
+      }
+    }catch(e){}
+    return null;
+  }
+  var found=findWistia(document)||findBC(document);
+  if(!found){
+    var frames=document.querySelectorAll('iframe');
+    for(var i=0;i<frames.length;i++){
+      try{
+        var fsrc=frames[i].src||'';
+        if(fsrc.indexOf('fast.wistia.com')>=0||fsrc.indexOf('wistia.net')>=0){found=fsrc;break;}
+        if(fsrc.indexOf('players.brightcove.net')>=0){found=fsrc;break;}
+        var fdoc=frames[i].contentDocument||frames[i].contentWindow.document;
+        found=findWistia(fdoc)||findBC(fdoc);
+        if(found) break;
+      }catch(e){}
     }
-    var pu=encodeURIComponent(window.location.href);window.open('${VRDOMAIN}/?url='+encodeURIComponent(url)+'&page_url='+pu,'_blank');
-  })();`;
+  }
+  if(found) url=found;
+  var pu=encodeURIComponent(orig);
+  window.open('${VRDOMAIN}/?url='+encodeURIComponent(url)+'&page_url='+pu,'_blank');
+})();`;
   document.getElementById('bookmarklet').href = bm;
 })();
 

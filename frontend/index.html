@@ -160,10 +160,12 @@ let activePolls = {};   // job_id -> intervalId
 (function() {
   const VRDOMAIN = window.location.origin;
   const bm = `javascript:(function(){
+    var url=window.location.href;
     var el=document.querySelector('[data-video-id][data-account]')||document.querySelector('video-js[data-video-id]');
-    if(!el){alert('No BrightCove video found on this page. Make sure the video has loaded first.');return;}
-    var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account'),player=el.getAttribute('data-player')||'default';
-    var url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
+    if(el){
+      var vid=el.getAttribute('data-video-id'),acc=el.getAttribute('data-account'),player=el.getAttribute('data-player')||'default';
+      url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;
+    }
     window.open('${VRDOMAIN}/?url='+encodeURIComponent(url),'_blank');
   })();`;
   document.getElementById('bookmarklet').href = bm;

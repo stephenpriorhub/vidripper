@@ -292,5 +292,21 @@ def delete_job(job_id):
     return jsonify({'deleted': True, 'id': job_id})
 
 
+COOKIES_DIR = DATA_DIR / 'cookies'
+
+
+@app.route('/api/admin/upload-cookies', methods=['POST'])
+def upload_cookies():
+    """Upload a Netscape cookies.txt file for a domain."""
+    f = request.files.get('file')
+    domain = (request.form.get('domain') or '').strip()
+    if not f or not domain:
+        return jsonify({'error': 'file and domain are required'}), 400
+    COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = COOKIES_DIR / f'{domain}.txt'
+    f.save(str(dest))
+    return jsonify({'saved': str(dest), 'domain': domain})
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

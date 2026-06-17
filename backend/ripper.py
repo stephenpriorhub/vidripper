@@ -262,7 +262,8 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
         return source_url
 
 
-COOKIES_DIR = Path(__file__).resolve().parent.parent / 'data' / 'cookies'
+_volume = Path('/data')
+COOKIES_DIR = (_volume if _volume.is_dir() else Path(__file__).resolve().parent.parent / 'data') / 'cookies'
 
 
 def _cookies_path(platform: str) -> str | None:

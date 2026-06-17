@@ -494,7 +494,7 @@ function cardHTML(job) {
   let analyzeBtn = '';
   if (revStatus === 'complete' && job.transcript_text) {
     if (job.promo_review_id) {
-      analyzeBtn = `<a class="btn-sm btn-view-analysis" href="${PROMO_ANALYZER_URL}/reviews/${job.promo_review_id}" target="_blank" rel="noopener">View Analysis</a>`;
+      analyzeBtn = `<a class="btn-sm btn-view-analysis" href="${PROMO_ANALYZER_URL}/?review=${job.promo_review_id}" target="_blank" rel="noopener">View Analysis</a>`;
     } else {
       const analyzingClass = job._analyzing ? ' analyzing' : '';
       const analyzingDisabled = job._analyzing ? ' disabled' : '';

@@ -1,4 +1,4 @@
-data/videos/*.mp4
+data/
 __pycache__/
 *.pyc
 *.pyo

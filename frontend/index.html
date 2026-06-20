@@ -220,6 +220,7 @@ let transcriptionProgress = {}; // job_id -> { submittedAt, pct }
   var el=document.querySelector('[class*="wistia_async_"]');
   if(el){var cls=el.className,idx=cls.indexOf('wistia_async_');if(idx>=0){var id=cls.substring(idx+13).split(' ')[0];if(id)url='https://fast.wistia.com/medias/'+id;}}
   if(url===orig){var bc=document.querySelector('[data-video-id][data-account]')||document.querySelector('video-js[data-video-id]');if(bc){var vid=bc.getAttribute('data-video-id'),acc=bc.getAttribute('data-account'),player=bc.getAttribute('data-player')||'default';if(vid&&acc)url='https://players.brightcove.net/'+acc+'/'+player+'_default/index.html?videoId='+vid;}}
+  if(url===orig){var vel=document.querySelector('[id^="vidalytics_embed_"]');if(vel){var vid=vel.id.substring('vidalytics_embed_'.length);var vscripts=document.querySelectorAll('script[src*="fast.vidalytics.com/embeds/"]');var acc='';for(var i=0;i<vscripts.length;i++){var vsrc=vscripts[i].src;var parts=vsrc.split('/');var eidx=parts.indexOf('embeds');if(eidx>=0&&parts[eidx+1]){acc=parts[eidx+1];break;}}if(vid&&acc)url='https://fast.vidalytics.com/embeds/'+acc+'/'+vid+'/';else if(vid)url='https://fast.vidalytics.com/embeds/unknown/'+vid+'/';}}
   if(url===orig){var frames=document.querySelectorAll('iframe');for(var i=0;i<frames.length;i++){var fs=frames[i].src||'';if(fs.indexOf('wistia')>=0||fs.indexOf('brightcove')>=0){url=fs;break;}}}
   window.open('${VRDOMAIN}/?url='+encodeURIComponent(url)+'&page_url='+encodeURIComponent(orig),'_blank');
 })();`;

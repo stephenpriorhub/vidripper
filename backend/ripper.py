@@ -29,8 +29,8 @@ PATTERNS = {
         r'videoId=(\d{7,})',
     ],
     'vidalytics': [
-        r'vidalytics\.com/embed/([A-Za-z0-9_-]+)',
-        r'vidalytics_embed[^"\']*["\']([A-Za-z0-9_-]{8,})["\']',
+        r'vidalytics_embed_([A-Za-z0-9_-]+)',
+        r'fast\.vidalytics\.com/embeds/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)',
     ],
 }
 
@@ -214,6 +214,13 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
             match = re.search(pattern, html, re.IGNORECASE)
             if match:
                 extra = {}
+                if platform == 'vidalytics':
+                    acc_match = re.search(
+                        r'fast\.vidalytics\.com/embeds/([A-Za-z0-9_-]+)/' + re.escape(match.group(1)),
+                        html,
+                    )
+                    if acc_match:
+                        extra['vidalytics_account_id'] = acc_match.group(1)
                 if platform == 'brightcove':
                     for p in BC_ACCOUNT_PATTERNS:
                         m = re.search(p, html, re.IGNORECASE)
@@ -257,7 +264,10 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
                     f'/index.html?videoId={video_id}')
         return source_url
     elif platform == 'vidalytics':
-        return f'https://vidalytics.com/embed/{video_id}'
+        account_id = extra.get('vidalytics_account_id', '')
+        if account_id:
+            return f'https://fast.vidalytics.com/embeds/{account_id}/{video_id}/'
+        return source_url  # fallback to original page
     else:
         return source_url
 

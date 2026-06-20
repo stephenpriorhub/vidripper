@@ -202,6 +202,27 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                     'pipeline_step': 'done',
                 })
                 return
+        elif 'fast.vidalytics.com/embeds/' in source_url:
+            # Direct Vidalytics embed URL — extract IDs from URL
+            import re as _re
+            _m = _re.search(r'fast\.vidalytics\.com/embeds/([A-Za-z0-9_-]+)/([A-Za-z0-9_-]+)', source_url)
+            if _m:
+                _acc, _vid = _m.group(1), _m.group(2)
+                _update_job(job_id, {
+                    'platform': 'vidalytics',
+                    'video_id': _vid,
+                    'pipeline_step': 'downloading_video',
+                })
+                dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
+                ripper.download_video('vidalytics', _vid, source_url, dest_path, {'vidalytics_account_id': _acc})
+                _update_job(job_id, {'local_video': f'/data/videos/{job_id}.mp4', 'pipeline_step': 'submitting_to_rev'})
+                app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
+                video_url = f'{app_base}/api/jobs/{job_id}/video'
+                now = datetime.now(timezone.utc).isoformat()
+                order_id = rev_client.submit_job(video_url, metadata=job_id)
+                _update_job(job_id, {'rev_order_id': order_id, 'rev_status': 'in_progress', 'rev_submitted_at': now, 'pipeline_step': 'done'})
+                return
+            html, title, thumbnail = '', source_url, ''
         else:
             html, title, thumbnail = ripper.fetch_page(source_url)
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})

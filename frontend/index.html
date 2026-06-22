@@ -55,6 +55,7 @@ body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:10
 .card-thumb:hover .play-btn{background:rgba(35,134,54,.85)}
 .play-btn svg{width:22px;height:22px;fill:#fff;margin-left:4px}
 .card-thumb-placeholder{width:100%;height:170px;background:linear-gradient(135deg,#21262d 0%,#161b22 100%);display:flex;align-items:center;justify-content:center;color:#484f58;font-size:2rem}
+.card-thumb .thumb-err{position:absolute;left:6px;bottom:6px;z-index:2;background:rgba(248,81,73,.92);color:#fff;font-size:.68rem;padding:2px 6px;border-radius:4px;pointer-events:auto;cursor:help}
 .video-modal-box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;width:90%;max-width:860px;position:relative}
 .video-modal-box video{width:100%;border-radius:6px;background:#000;display:block}
 .video-modal-close{position:absolute;top:10px;right:14px;background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;line-height:1}
@@ -440,8 +441,13 @@ function cardHTML(job) {
   } else if (job.thumbnail_url) {
     thumbImg = `<img src="${esc(job.thumbnail_url)}" alt="" onerror="this.style.display='none'">`;
   }
+  // Surface a screenshot failure (e.g. CAPTCHA / browser missing) instead of failing silently.
+  const screenshotErr = (!job.has_screenshot && job.screenshot_error)
+    ? `<div class="thumb-err" title="Screenshot failed: ${esc(job.screenshot_error)}">&#9888; screenshot failed</div>`
+    : '';
   const thumbHTML = `<div class="card-thumb" onclick="openVideoPlayer('${job.id}','${esc(job.title||'')}')">
   ${thumbImg || '<div class="card-thumb-placeholder" style="position:absolute;inset:0;width:100%;height:100%">&#127909;</div>'}
+  ${screenshotErr}
   <div class="play-btn"><svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg></div>
 </div>`;
 

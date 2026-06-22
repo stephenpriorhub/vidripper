@@ -117,6 +117,41 @@ def _build_docx(title: str, transcript_text: str) -> bytes:
         raise RuntimeError('python-docx is not installed')
 
 
+# ── title composition ─────────────────────────────────────────────────────
+
+def _compose_title(source_url: str, video_title: str, page_title: str) -> str:
+    """
+    Build a friendly job title: "{Publisher} - {video title}".
+    Falls back to the page title, then to whatever is available.
+    """
+    publisher = ripper.publisher_from_url(source_url)
+    vt = (video_title or '').strip()
+    pt = (page_title or '').strip()
+    # Don't use a page "title" that is really just the source URL.
+    if pt == source_url:
+        pt = ''
+    chosen = vt or pt
+    if publisher and chosen:
+        return f'{publisher} - {chosen}'
+    return chosen or publisher or (pt or source_url)
+
+
+def _apply_video_metadata(job_id: str, source_url: str, platform: str, video_id: str,
+                          extra: dict, page_title: str = '') -> None:
+    """
+    Probe yt-dlp for the real video title + thumbnail and update the job.
+    Best-effort: never raises. Sets title to "{Publisher} - {video title}" and,
+    when the page had no og:image thumbnail, backfills info['thumbnail'].
+    """
+    info = ripper.probe_video_info(platform, video_id, source_url, extra)
+    video_title = ripper.video_title_from_info(info)
+    updates = {'title': _compose_title(source_url, video_title, page_title)}
+    job = _get_job(job_id)
+    if (not job or not job.get('thumbnail_url')) and info.get('thumbnail'):
+        updates['thumbnail_url'] = info['thumbnail']
+    _update_job(job_id, updates)
+
+
 # ── background pipeline ─────────────────────────────────────────────────────
 
 def _take_screenshot(job_id: str, source_url: str) -> None:
@@ -182,6 +217,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 })
                 dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
                 ripper.download_video('wistia', _m.group(1), source_url, dest_path, {})
+                _apply_video_metadata(job_id, source_url, 'wistia', _m.group(1), {})
                 _update_job(job_id, {
                     'local_video': f'/data/videos/{job_id}.mp4',
                     'pipeline_step': 'taking_screenshot',
@@ -215,6 +251,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 })
                 dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
                 ripper.download_video('vidalytics', _vid, source_url, dest_path, {'vidalytics_account_id': _acc})
+                _apply_video_metadata(job_id, source_url, 'vidalytics', _vid, {'vidalytics_account_id': _acc})
                 _update_job(job_id, {'local_video': f'/data/videos/{job_id}.mp4', 'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
@@ -253,6 +290,10 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         # Step 3: download
         dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
         ripper.download_video(platform, video_id, source_url, dest_path, extra)
+        # Capture the real yt-dlp video title + thumbnail fallback.
+        current = _get_job(job_id)
+        _page_title = (current.get('title') if current else '') or title
+        _apply_video_metadata(job_id, source_url, platform, video_id, extra, _page_title)
         _update_job(job_id, {
             'local_video': f'/data/videos/{job_id}.mp4',
             'pipeline_step': 'taking_screenshot',

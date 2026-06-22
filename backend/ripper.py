@@ -1,6 +1,7 @@
 """
 Platform detection and yt-dlp video download wrapper.
 """
+import json
 import re
 import subprocess
 import tempfile
@@ -286,6 +287,97 @@ def _cookies_path(platform: str) -> str | None:
     if generic.exists():
         return str(generic)
     return None
+
+
+# ── publisher / title helpers ────────────────────────────────────────────────
+
+# Known publisher domains → friendly display names.
+PUBLISHER_MAP = {
+    'brownstoneresearch.com': 'Brownstone',
+    'investorplace.com': 'InvestorPlace',
+    'paradigmpressgroup.com': 'Paradigm',
+    'monumenttradersalliance.com': 'MTA',
+    'stansberryresearch.com': 'Stansberry',
+    'oxfordclub.com': 'Oxford Club',
+    'agorafinancial.com': 'Agora',
+    'banyanhill.com': 'Banyan Hill',
+    'legacyresearch.com': 'Legacy Research',
+    'rogueeconomics.com': 'Rogue Economics',
+    'jeffclarktrader.com': 'Jeff Clark',
+    'dailyreckoning.com': 'Daily Reckoning',
+}
+
+# Subdomain prefixes to strip when deriving a publisher label from a domain.
+_DOMAIN_PREFIXES = ('www.', 'secure.', 'mb.', 'pro.', 'view.', 'go.', 'app.')
+
+
+def publisher_from_url(url: str) -> str:
+    """
+    Derive a friendly publisher name from a URL's domain.
+    Maps known domains; otherwise strips common prefixes and Title-cases the root.
+    """
+    domain = (urlparse(url).netloc or '').lower()
+    for prefix in _DOMAIN_PREFIXES:
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    # Collapse to the registrable root (last two labels) for matching.
+    parts = domain.split('.')
+    root = '.'.join(parts[-2:]) if len(parts) >= 2 else domain
+    if root in PUBLISHER_MAP:
+        return PUBLISHER_MAP[root]
+    if domain in PUBLISHER_MAP:
+        return PUBLISHER_MAP[domain]
+    # Fallback: Title-case the root label (the bit before the TLD).
+    label = root.split('.')[0] if root else domain
+    return label.replace('-', ' ').replace('_', ' ').title() if label else 'Video'
+
+
+def probe_video_info(platform: str, video_id: str, source_url: str, extra: dict = None) -> dict:
+    """
+    Run `yt-dlp --dump-single-json` to obtain video metadata without downloading.
+    Returns a dict (possibly empty) with keys like title / alt_title / display_id /
+    thumbnail. Never raises — metadata is best-effort.
+    """
+    yt_url = _build_yt_dlp_url(platform, video_id, source_url, extra)
+    cmd = [
+        'yt-dlp',
+        '--no-playlist',
+        '--skip-download',
+        '--dump-single-json',
+        '--no-warnings',
+    ]
+    cookies = _cookies_path(platform)
+    if cookies:
+        cmd += ['--cookies', cookies]
+    cmd.append(yt_url)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        info = json.loads(result.stdout)
+        if isinstance(info, dict) and info.get('entries'):
+            # Playlist-shaped result — use the first entry.
+            entries = [e for e in info['entries'] if isinstance(e, dict)]
+            if entries:
+                info = entries[0]
+        return info if isinstance(info, dict) else {}
+    except Exception:
+        return {}
+
+
+def video_title_from_info(info: dict) -> str:
+    """
+    Extract the user-created video title from a yt-dlp info dict.
+    Prefers `title`, then `alt_title`, then `display_id`. Ignores titles that are
+    just the numeric/ID display_id or empty.
+    """
+    if not info:
+        return ''
+    for key in ('title', 'alt_title'):
+        val = (info.get(key) or '').strip()
+        if val and val.lower() not in ('na', 'none'):
+            return val
+    return (info.get('display_id') or '').strip()
 
 
 def download_video(platform: str, video_id: str, source_url: str, dest_path: str, extra: dict = None) -> str:

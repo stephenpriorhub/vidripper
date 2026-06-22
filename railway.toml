@@ -1,9 +1,19 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pip install playwright playwright-stealth && playwright install chromium --with-deps"
+# Install the OS-level deps for Chromium at build time (these live in the image
+# and don't need the volume). The browser binary itself is (re)installed at
+# startup into the persistent /data volume — see backend/serve.py.
+buildCommand = "pip install playwright playwright-stealth && playwright install-deps chromium"
 
 [deploy]
 startCommand = "python backend/serve.py"
 healthcheckPath = "/api/ping"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
+
+[deploy.envs]
+# Persist the Chromium browser binary on the /data volume so screenshots work
+# across deploys/restarts. The default browser path lives outside the volume
+# and gets wiped on each deploy; serve.py installs Chromium here on boot if
+# the binary is missing.
+PLAYWRIGHT_BROWSERS_PATH = "/data/.playwright-browsers"

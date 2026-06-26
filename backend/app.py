@@ -264,23 +264,36 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             html, title, thumbnail = ripper.fetch_page(source_url)
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
+        # Domains known to work with yt-dlp's generic extractor — skip Playwright
+        # rendering and pass source_url directly to yt-dlp.
+        _GENERIC_EXTRACTOR_DOMAINS = (
+            'foxbusiness.com',
+            'foxnews.com',
+        )
+
         # Step 2: detect platform — if unknown, retry with headless browser
         platform, video_id, extra = ripper.detect_platform(html, source_url)
         if platform == 'unknown':
-            _update_job(job_id, {'pipeline_step': 'fetching_page_rendered'})
-            html, title_r, thumbnail_r, bc_attrs = ripper.fetch_page_rendered(source_url)
-            if title_r and title_r != source_url:
-                _update_job(job_id, {'title': title_r, 'thumbnail_url': thumbnail_r})
-            # If Playwright found BrightCove attrs directly in the DOM, use them
-            if bc_attrs and bc_attrs.get('video_id') and bc_attrs.get('account_id'):
-                platform = 'brightcove'
-                video_id = bc_attrs['video_id']
-                extra = {
-                    'bc_account_id': bc_attrs['account_id'],
-                    'bc_player_id': bc_attrs.get('player_id', ''),
-                }
-            else:
-                platform, video_id, extra = ripper.detect_platform(html, source_url)
+            # Check if this is a domain that yt-dlp handles natively without rendering
+            from urllib.parse import urlparse as _urlparse
+            _host = _urlparse(source_url).netloc.lower().lstrip('www.')
+            _skip_playwright = any(_host.endswith(d) for d in _GENERIC_EXTRACTOR_DOMAINS)
+
+            if not _skip_playwright:
+                _update_job(job_id, {'pipeline_step': 'fetching_page_rendered'})
+                html, title_r, thumbnail_r, bc_attrs = ripper.fetch_page_rendered(source_url)
+                if title_r and title_r != source_url:
+                    _update_job(job_id, {'title': title_r, 'thumbnail_url': thumbnail_r})
+                # If Playwright found BrightCove attrs directly in the DOM, use them
+                if bc_attrs and bc_attrs.get('video_id') and bc_attrs.get('account_id'):
+                    platform = 'brightcove'
+                    video_id = bc_attrs['video_id']
+                    extra = {
+                        'bc_account_id': bc_attrs['account_id'],
+                        'bc_player_id': bc_attrs.get('player_id', ''),
+                    }
+                else:
+                    platform, video_id, extra = ripper.detect_platform(html, source_url)
         _update_job(job_id, {
             'platform': platform,
             'video_id': video_id,

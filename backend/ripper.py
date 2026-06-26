@@ -270,6 +270,9 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
             return f'https://fast.vidalytics.com/embeds/{account_id}/{video_id}/'
         return source_url  # fallback to original page
     else:
+        # Unknown platform — pass source_url directly so yt-dlp's generic extractor
+        # can attempt extraction. Works for: foxbusiness.com, foxnews.com, and any
+        # other site with a direct MP4 embed that yt-dlp's generic extractor handles.
         return source_url
 
 
@@ -415,6 +418,12 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
         if result.returncode != 0:
             err = result.stderr[:500]
             if 'Unsupported URL' in err:
+                if platform == 'unknown':
+                    raise RuntimeError(
+                        'Could not detect video platform. yt-dlp also could not extract a video '
+                        'from this URL. Try the bookmarklet on this page, or paste the direct '
+                        'video URL.'
+                    )
                 raise RuntimeError(
                     'Could not extract video — the page requires login or is not publicly accessible. '
                     'For InvestorPlace BrightCove videos: open Chrome DevTools → Network tab → '

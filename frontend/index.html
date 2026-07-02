@@ -112,7 +112,7 @@ body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:10
 .modal-body{padding:20px;overflow-y:auto;flex:1;white-space:pre-wrap;font-size:.82rem;line-height:1.7;color:#c9d1d9;font-family:'Courier New',monospace}
 
 /* ── screenshot modal ── */
-.screenshot-modal .modal-body{padding:12px;display:flex;align-items:center;justify-content:center;background:#0d1117}
+.screenshot-modal .modal-body{padding:12px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;background:#0d1117}
 .screenshot-modal .modal-body img{max-width:100%;max-height:60vh;border-radius:6px}
 
 /* ── section header ── */
@@ -521,13 +521,11 @@ function cardHTML(job) {
     ? `<a class="btn-sm btn-docx" href="/api/jobs/${job.id}/transcript.docx" download>Download .docx</a>`
     : '';
 
-  const screenshotBtn = job.has_screenshot
-    ? `<button class="btn-sm btn-screenshot" onclick="openScreenshot('${job.id}','${esc(job.title)}')">Screenshot</button>`
-    : '';
-
+  // One page-image button: opens the screenshot viewer (which has a download
+  // link). Falls back to the og:image thumbnail when no screenshot exists.
   let pageImgBtn = '';
   if (job.has_screenshot) {
-    pageImgBtn = `<a class="btn-sm btn-secondary" href="${API}/api/jobs/${job.id}/screenshot" download="screenshot-${job.id}.png">Page Screenshot</a>`;
+    pageImgBtn = `<button class="btn-sm btn-screenshot" onclick="openScreenshot('${job.id}','${esc(job.title)}')">Page Screenshot</button>`;
   } else if (job.thumbnail_url) {
     pageImgBtn = `<a class="btn-sm btn-secondary" href="${esc(job.thumbnail_url)}" target="_blank" rel="noopener">Page Image</a>`;
   }
@@ -566,7 +564,6 @@ function cardHTML(job) {
     <div class="card-actions">
       ${dlBtn}
       ${pageImgBtn}
-      ${screenshotBtn}
       ${transcriptBtn}
       ${docxBtn}
       ${analyzeBtn}
@@ -646,7 +643,8 @@ document.getElementById('transcriptModal').addEventListener('click', function(e)
 function openScreenshot(jobId, title) {
   document.getElementById('screenshotModalTitle').textContent = (title || 'Page Screenshot');
   document.getElementById('screenshotModalBody').innerHTML =
-    `<img src="/api/jobs/${jobId}/screenshot" alt="screenshot">`;
+    `<img src="/api/jobs/${jobId}/screenshot" alt="screenshot">
+     <a class="btn-sm btn-secondary" href="/api/jobs/${jobId}/screenshot" download="screenshot-${jobId}.png">Download PNG</a>`;
   document.getElementById('screenshotModal').classList.add('open');
 }
 

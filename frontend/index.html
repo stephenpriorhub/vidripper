@@ -246,6 +246,7 @@ const API = '';
 const PROMO_ANALYZER_URL = 'https://analyzer.oxfordhub.app';
 
 let activePolls = {};   // job_id -> intervalId (Rev transcript polling)
+let jobsById = {};      // job_id -> job (so modals can read headline fields)
 let transcriptionProgress = {}; // job_id -> { submittedAt, pct }
 
 // ── bookmarklet ───────────────────────────────────────────────────────────
@@ -430,6 +431,8 @@ async function loadJobs() {
   try {
     const resp = await fetch(`${API}/api/jobs`);
     const jobs = await resp.json();
+    jobsById = {};
+    jobs.forEach(j => { jobsById[j.id] = j; });
     renderJobs(jobs);
 
     // Set up polling for in-progress Rev jobs
@@ -604,6 +607,23 @@ function esc(str) {
 
 // ── transcript ────────────────────────────────────────────────────────────
 
+// Render the extracted promo headline block (eyebrow / headline / subhead /
+// subhead2) above the transcript in the popup — mirrors the .docx layout.
+function transcriptHeaderHTML(job) {
+  if (!job) return '';
+  const lines = [
+    [job.eyebrow, 13],
+    [job.headline, 22],
+    [job.subhead, 15],
+    [job.subhead2, 13],
+  ].filter(([t]) => t && t.trim());
+  if (!lines.length) return '';
+  const html = lines.map(([t, px]) =>
+    `<div style="font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:${px}px;line-height:1.25;margin-bottom:4px;color:#f0f6fc">${esc(t)}</div>`
+  ).join('');
+  return `<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #30363d">${html}</div>`;
+}
+
 async function openTranscript(jobId, title) {
   document.getElementById('modalTitle').textContent = title || 'Transcript';
   document.getElementById('modalBody').textContent = 'Loading...';
@@ -623,7 +643,10 @@ async function openTranscript(jobId, title) {
         `Error: ${data.error || 'Unknown error'}`;
       return;
     }
-    document.getElementById('modalBody').textContent = data.transcript || '(empty transcript)';
+    const job = jobsById[jobId];
+    const header = transcriptHeaderHTML(job);
+    const body = esc(data.transcript || '(empty transcript)');
+    document.getElementById('modalBody').innerHTML = header + `<div>${body}</div>`;
     loadJobs();
   } catch (e) {
     document.getElementById('modalBody').textContent = `Error: ${e.message}`;

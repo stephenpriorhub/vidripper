@@ -1,19 +1,18 @@
 [build]
 builder = "nixpacks"
-# Install the OS-level deps for Chromium at build time (these live in the image
-# and don't need the volume). The browser binary itself is (re)installed at
-# startup into the persistent /data volume — see backend/serve.py.
-buildCommand = "pip install playwright playwright-stealth && playwright install-deps chromium"
+# Install Chromium (browser binary + OS deps) into the image at build time so
+# it is baked into every deploy at Playwright's default path
+# (/root/.cache/ms-playwright). serve.py re-installs at boot only as a fallback.
+#
+# NOTE: do NOT move the browser onto the /data volume via a PLAYWRIGHT_BROWSERS_PATH
+# set in a [deploy.envs] block — railway.toml does not apply env vars that way, so
+# the var ends up unset at runtime and Playwright can't find the binary (the bug
+# that made screenshots fail with "Executable doesn't exist"). Set env vars in the
+# Railway dashboard if a custom path is ever needed.
+buildCommand = "pip install playwright playwright-stealth && playwright install --with-deps chromium"
 
 [deploy]
 startCommand = "python backend/serve.py"
 healthcheckPath = "/api/ping"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
-
-[deploy.envs]
-# Persist the Chromium browser binary on the /data volume so screenshots work
-# across deploys/restarts. The default browser path lives outside the volume
-# and gets wiped on each deploy; serve.py installs Chromium here on boot if
-# the binary is missing.
-PLAYWRIGHT_BROWSERS_PATH = "/data/.playwright-browsers"

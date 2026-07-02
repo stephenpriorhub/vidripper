@@ -11,22 +11,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 def _ensure_chromium() -> None:
     """
-    Ensure the Playwright Chromium binary exists at PLAYWRIGHT_BROWSERS_PATH.
+    Boot-time safety net: ensure a Playwright Chromium binary is present.
 
-    On Railway, PLAYWRIGHT_BROWSERS_PATH points at the persistent /data volume,
-    which is empty after a fresh deploy. The OS-level deps are baked into the
-    image at build time; here we just (re)install the browser binary itself if
-    it's missing. Best-effort — failure must not block app startup.
+    The browser is installed into the image at build time (see railway.toml), so
+    this normally finds it and returns. It only reinstalls if the binary is
+    missing — e.g. a Playwright version bump changed the expected revision.
+    Best-effort — failure must not block app startup.
+
+    Checks whichever path Playwright will actually use: PLAYWRIGHT_BROWSERS_PATH
+    if set, otherwise the default cache (~/.cache/ms-playwright). Recognizes both
+    the full-browser (`chromium-*`) and headless-shell (`chromium_headless_shell-*`)
+    directory names that newer Playwright versions create.
     """
-    browsers_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
-    if not browsers_path:
-        return  # local dev — rely on Playwright's default cache location
+    browsers_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH') or str(
+        Path.home() / '.cache' / 'ms-playwright'
+    )
     marker_dir = Path(browsers_path)
-    has_chromium = marker_dir.is_dir() and any(marker_dir.glob('chromium-*'))
+    has_chromium = marker_dir.is_dir() and (
+        any(marker_dir.glob('chromium-*'))
+        or any(marker_dir.glob('chromium_headless_shell-*'))
+    )
     if has_chromium:
         print(f'[serve] Chromium already present at {browsers_path}', flush=True)
         return
-    print(f'[serve] Installing Chromium to {browsers_path} ...', flush=True)
+    print(f'[serve] Chromium missing at {browsers_path}; installing ...', flush=True)
     try:
         subprocess.run(
             [sys.executable, '-m', 'playwright', 'install', 'chromium'],

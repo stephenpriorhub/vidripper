@@ -52,7 +52,7 @@ vidripper/
 - Screenshots are taken for **bookmarklet/gated jobs too** — the original promo page (`page_url`) is rendered using uploaded cookies (`data/cookies/{domain}.txt`) so gated pages render authenticated. Non-blocking on failure (`screenshot_error`).
 - Generic-extractor domains (Fox Business, etc.) are skipped — news clips, not promos.
 - `analyze-proxy` sends the top clip (fallback: full page) to the analyzer alongside the transcript `.docx`, so the analyzer reads the headline/subheadline from the image (transcript is audio only).
-- After the screenshot, `_extract_headline` runs a Claude vision call on the top clip to pull the promo `headline` + `subheadline` onto the job (rule: text above the video wins; else the video thumbnail; else ignore thumbnail text). `_build_docx` renders them above the transcript — headline 26pt bold, subheadline 16pt bold — falling back to the plain title heading when absent. Requires `ANTHROPIC_API_KEY`.
+- After the screenshot, `_extract_headline` runs a Claude vision call on the top clip to pull the promo headline block onto the job as `eyebrow` / `headline` / `subhead` / `subhead2` (rule: read the text above the video; else the video thumbnail; else ignore thumbnail text). `_build_docx` renders them above the transcript in descending prominence — eyebrow 13pt, headline 26pt, subhead 16pt, subhead2 14pt, all bold — falling back to the plain title heading when absent. Requires `ANTHROPIC_API_KEY`.
 
 ## Data Model
 Each job in manifest.json has:

@@ -98,29 +98,34 @@ def _find_duplicate(source_url: str) -> dict | None:
 
 # ── docx generation ─────────────────────────────────────────────────────────
 
-def _build_docx(title: str, transcript_text: str,
-                headline: str = '', subheadline: str = '') -> bytes:
+def _build_docx(title: str, transcript_text: str, eyebrow: str = '',
+                headline: str = '', subhead: str = '', subhead2: str = '') -> bytes:
     """Return .docx bytes for the given transcript.
 
-    When a headline/subheadline was extracted from the promo page, render them
-    above the transcript — headline largest and bold, subheadline smaller and
-    bold. Falls back to the plain title heading when neither is available.
+    When a headline block was extracted from the promo page, render it above the
+    transcript in descending prominence — eyebrow (small), headline (largest),
+    subhead, then a secondary subhead — all bold. Falls back to the plain title
+    heading when no headline block is available.
     """
     try:
         from docx import Document
         from docx.shared import Pt
         doc = Document()
-        if headline or subheadline:
-            if headline:
+        # (text, point size) in visual order; skipped when empty.
+        header_lines = [
+            (eyebrow, 13),
+            (headline, 26),
+            (subhead, 16),
+            (subhead2, 14),
+        ]
+        if any(text for text, _ in header_lines):
+            for text, size in header_lines:
+                if not text:
+                    continue
                 p = doc.add_paragraph()
-                run = p.add_run(headline)
+                run = p.add_run(text)
                 run.bold = True
-                run.font.size = Pt(26)
-            if subheadline:
-                p = doc.add_paragraph()
-                run = p.add_run(subheadline)
-                run.bold = True
-                run.font.size = Pt(16)
+                run.font.size = Pt(size)
             doc.add_paragraph()  # spacer before the transcript
         else:
             doc.add_heading(title or 'Transcript', level=1)
@@ -284,13 +289,21 @@ HEADLINE_MODEL = 'claude-haiku-4-5-20251001'
 
 
 def _extract_headline(job_id: str) -> None:
-    """Read the promo headline + subheadline off the top-of-page screenshot via
-    Claude vision and store them on the job. Best-effort — never raises, and
-    no-ops when ANTHROPIC_API_KEY is unset so it can't break the pipeline.
+    """Read the promo headline block off the top-of-page screenshot via Claude
+    vision and store it on the job. Best-effort — never raises, and no-ops when
+    ANTHROPIC_API_KEY is unset so it can't break the pipeline.
 
-    Rule (matches the analyzer): text ABOVE the video is the headline/subheadline;
-    if there is none above the video, read them from the video thumbnail;
-    otherwise ignore any text inside the thumbnail.
+    Captures the full headline hierarchy of a sales page:
+      - eyebrow    : the small pre-headline line above the headline
+                     (e.g. "FORMER CIA ADVISOR RELEASES:")
+      - headline   : the largest, most prominent line (e.g. "THE AI BLACK PAPER")
+      - subhead    : the line directly under the headline
+      - subhead2   : a secondary subhead / pull-quote, often below the video
+                     (e.g. "The Dow Could Drop By 80% — Former CIA Advisor Jim Rickards")
+
+    Rule (matches the analyzer): the headline block is the text ABOVE the video;
+    if there is none above the video, read it from the video thumbnail; otherwise
+    ignore any text inside the thumbnail.
     """
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
@@ -307,7 +320,7 @@ def _extract_headline(job_id: str) -> None:
         client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
             model=HEADLINE_MODEL,
-            max_tokens=400,
+            max_tokens=500,
             messages=[{
                 'role': 'user',
                 'content': [
@@ -316,13 +329,21 @@ def _extract_headline(job_id: str) -> None:
                     }},
                     {'type': 'text', 'text': (
                         'This is a screenshot of the top of a financial promo landing page. '
-                        'Extract the main HEADLINE and SUBHEADLINE of the promo.\n'
-                        'Rules: if there is text ABOVE the video, that text is the '
-                        'headline/subheadline. If there is NO text above the video, read the '
-                        'headline/subheadline from the video thumbnail shown in the image. '
-                        'Otherwise ignore any text inside the video thumbnail.\n'
-                        'Return ONLY compact JSON: {"headline": "...", "subheadline": "..."}. '
-                        'Use "" for a field that is not present. No other text.'
+                        'Extract the promo headline block, verbatim, in these parts:\n'
+                        '- "eyebrow": the small pre-headline line ABOVE the headline '
+                        '(e.g. "FORMER CIA ADVISOR RELEASES:").\n'
+                        '- "headline": the single largest / most prominent line '
+                        '(e.g. "THE AI BLACK PAPER").\n'
+                        '- "subhead": the line directly under the headline '
+                        '(e.g. "WARNS THE AI BUBBLE IS SET TO POP ON JULY 29TH AT 6:30PM").\n'
+                        '- "subhead2": a secondary subhead or pull-quote, often below the '
+                        'video (e.g. "The Dow Could Drop By 80% - Former CIA Advisor Jim '
+                        'Rickards").\n'
+                        'Which text to read: use the text ABOVE the video. If there is no '
+                        'text above the video, read the block from the video thumbnail shown '
+                        'in the image. Otherwise ignore any text inside the video thumbnail.\n'
+                        'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
+                        'subhead2. Use "" for any part that is not present. No other text.'
                     )},
                 ],
             }],
@@ -334,8 +355,10 @@ def _extract_headline(job_id: str) -> None:
         if '{' in raw and '}' in raw:
             data = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
         _update_job(job_id, {
+            'eyebrow': (data.get('eyebrow') or '').strip(),
             'headline': (data.get('headline') or '').strip(),
-            'subheadline': (data.get('subheadline') or '').strip(),
+            'subhead': (data.get('subhead') or '').strip(),
+            'subhead2': (data.get('subhead2') or '').strip(),
         })
     except Exception as exc:
         _update_job(job_id, {'headline_error': str(exc)[:200]})
@@ -543,8 +566,10 @@ def rip():
         'rev_transcript_url': '',
         'transcript_text': '',
         'has_screenshot': False,
+        'eyebrow': '',
         'headline': '',
-        'subheadline': '',
+        'subhead': '',
+        'subhead2': '',
         'pipeline_step': 'queued',
         'error': '',
         'created_at': now,
@@ -618,7 +643,8 @@ def get_transcript_docx(job_id):
     try:
         docx_bytes = _build_docx(
             job.get('title', ''), text,
-            job.get('headline', ''), job.get('subheadline', ''),
+            job.get('eyebrow', ''), job.get('headline', ''),
+            job.get('subhead', ''), job.get('subhead2', ''),
         )
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
@@ -697,7 +723,8 @@ def analyze_proxy(job_id):
     try:
         docx_bytes = _build_docx(
             title, text,
-            job.get('headline', ''), job.get('subheadline', ''),
+            job.get('eyebrow', ''), job.get('headline', ''),
+            job.get('subhead', ''), job.get('subhead2', ''),
         )
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500

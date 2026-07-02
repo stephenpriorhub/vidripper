@@ -46,6 +46,12 @@ vidripper/
 - BrightCove (generic yt-dlp extractor on original page URL)
 - Vidalytics
 
+## Screenshots
+- `_take_screenshot` captures a **full-page** PNG (`{job_id}.png`, entire scrollable page — auto-scrolls first to trigger lazy-loaded images) for viewing/download, plus a **top-of-page clip** (`{job_id}_top.png`, from the top through the video + CTA button, capped ≤8000px) for the Promo Analyzer's vision API.
+- Screenshots are taken for **bookmarklet/gated jobs too** — the original promo page (`page_url`) is rendered using uploaded cookies (`data/cookies/{domain}.txt`) so gated pages render authenticated. Non-blocking on failure (`screenshot_error`).
+- Generic-extractor domains (Fox Business, etc.) are skipped — news clips, not promos.
+- `analyze-proxy` sends the top clip (fallback: full page) to the analyzer alongside the transcript `.docx`, so the analyzer reads the headline/subheadline from the image (transcript is audio only).
+
 ## Data Model
 Each job in manifest.json has:
 - id, source_url, page_url (original page for screenshot), platform, video_id, title, thumbnail_url

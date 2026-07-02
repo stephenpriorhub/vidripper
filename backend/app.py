@@ -154,8 +154,14 @@ def _apply_video_metadata(job_id: str, source_url: str, platform: str, video_id:
 
 # ── background pipeline ─────────────────────────────────────────────────────
 
-def _take_screenshot(job_id: str, source_url: str) -> None:
-    """Take a Playwright screenshot of source_url; save to SCREENSHOTS_DIR/{job_id}.png."""
+def _take_screenshot(job_id: str, target_url: str) -> None:
+    """Full-page screenshot of target_url; save to SCREENSHOTS_DIR/{job_id}.png.
+
+    Captures the ENTIRE scrollable page (not just the viewport) so the promo
+    headline, subheadline and full sales copy are preserved for the analyzer.
+    Auto-scrolls first to force lazy-loaded images/sections to render, and
+    loads any uploaded cookies so gated promo pages render authenticated.
+    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -171,7 +177,7 @@ def _take_screenshot(job_id: str, source_url: str) -> None:
                 ),
                 viewport={'width': 1280, 'height': 800},
             )
-            pw_cookies = ripper._load_cookies_for_playwright(source_url)
+            pw_cookies = ripper._load_cookies_for_playwright(target_url)
             if pw_cookies:
                 context.add_cookies(pw_cookies)
             page = context.new_page()
@@ -181,12 +187,71 @@ def _take_screenshot(job_id: str, source_url: str) -> None:
             except ImportError:
                 pass
             try:
-                page.goto(source_url, wait_until='domcontentloaded', timeout=30000)
+                page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
                 page.wait_for_load_state('networkidle', timeout=8000)
             except Exception:
                 pass
+            # Long sales pages defer most images/sections until scrolled into
+            # view. Step-scroll to the bottom to trigger lazy loading, then
+            # return to the top before capturing the full page.
+            try:
+                page.evaluate("""async () => {
+                    await new Promise((resolve) => {
+                        let total = 0;
+                        const step = 800;
+                        const timer = setInterval(() => {
+                            window.scrollBy(0, step);
+                            total += step;
+                            if (total >= document.body.scrollHeight) {
+                                clearInterval(timer);
+                                window.scrollTo(0, 0);
+                                resolve();
+                            }
+                        }, 120);
+                    });
+                }""")
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
             dest = str(SCREENSHOTS_DIR / f'{job_id}.png')
-            page.screenshot(path=dest, full_page=False)
+            page.screenshot(path=dest, full_page=True)
+            # Also capture a top-of-page clip for the analyzer. The vision API
+            # rejects images taller than 8000px and sales pages are far taller,
+            # so send the top — where the headline/subheadline, the video and
+            # its CTA button live — as a legible, in-limits crop.
+            try:
+                metrics = page.evaluate("""() => {
+                    const sels = ['video','iframe','[class*="wistia"]','[data-video-id]','.video-js'];
+                    let bottom = 0;
+                    for (const sel of sels) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 200 && r.height > 100) {
+                                const b = r.top + window.scrollY + r.height;
+                                if (b > bottom) bottom = b;
+                            }
+                        }
+                    }
+                    return {
+                        videoBottom: Math.ceil(bottom),
+                        pageHeight: Math.ceil(document.documentElement.scrollHeight),
+                        pageWidth: Math.ceil(document.documentElement.clientWidth) || 1280,
+                    };
+                }""")
+                page_h = max(1, int(metrics.get('pageHeight') or 0))
+                page_w = min(1280, max(1, int(metrics.get('pageWidth') or 1280)))
+                v_bottom = int(metrics.get('videoBottom') or 0)
+                # Include the video + ~500px below for the CTA button; fall back
+                # to the first 3000px when no video is found.
+                clip_h = (v_bottom + 500) if v_bottom > 0 else 3000
+                clip_h = max(1, min(clip_h, 8000, page_h))
+                top_dest = str(SCREENSHOTS_DIR / f'{job_id}_top.png')
+                page.screenshot(
+                    path=top_dest,
+                    clip={'x': 0, 'y': 0, 'width': page_w, 'height': clip_h},
+                )
+            except Exception:
+                pass  # top clip is best-effort; full-page PNG is still saved
             browser.close()
         _update_job(job_id, {'has_screenshot': True})
     except Exception as exc:
@@ -223,9 +288,11 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                     'pipeline_step': 'taking_screenshot',
                 })
                 job = _get_job(job_id)
-                # Skip screenshot for bookmarklet jobs — gated pages return CAPTCHAs; og:image thumbnail is used instead
-                if not job or not job.get('page_url'):
-                    _take_screenshot(job_id, source_url)
+                # Screenshot the original promo page (page_url) for bookmarklet
+                # jobs so the analyzer gets the headline/subheadline; fall back
+                # to the source URL otherwise. Non-blocking on failure.
+                _shot_url = (job.get('page_url') if job else None) or source_url
+                _take_screenshot(job_id, _shot_url)
                 _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
@@ -312,11 +379,18 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
             'pipeline_step': 'taking_screenshot',
         })
 
-        # Step 4: screenshot (non-blocking on failure)
-        # Skip for bookmarklet jobs — gated pages return CAPTCHAs; og:image thumbnail is used instead
+        # Step 4: full-page screenshot (non-blocking on failure).
+        # Prefer the original promo page (page_url, set for bookmarklet jobs) so
+        # the analyzer can read the headline/subheadline; fall back to the
+        # pasted URL. Uploaded cookies let gated pages render authenticated.
         job = _get_job(job_id)
-        if not job or not job.get('page_url'):
-            _take_screenshot(job_id, source_url)
+        _shot_url = (job.get('page_url') if job else None) or source_url
+        # Skip screenshots for generic-extractor domains (e.g. Fox Business) —
+        # those are news clips, not promos, so there's no headline to capture.
+        from urllib.parse import urlparse as _up_shot
+        _shot_host = _up_shot(_shot_url).netloc.lower().lstrip('www.')
+        if not any(_shot_host.endswith(d) for d in _GENERIC_EXTRACTOR_DOMAINS):
+            _take_screenshot(job_id, _shot_url)
         _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
 
         # Step 5: Rev AI — submit video URL directly, no upload needed
@@ -504,13 +578,14 @@ def delete_job(job_id):
         except OSError:
             pass
 
-    # Remove screenshot if present
-    screenshot_path = SCREENSHOTS_DIR / f'{job_id}.png'
-    if screenshot_path.exists():
-        try:
-            screenshot_path.unlink()
-        except OSError:
-            pass
+    # Remove screenshots (full page + top clip) if present
+    for _shot in (f'{job_id}.png', f'{job_id}_top.png'):
+        _sp = SCREENSHOTS_DIR / _shot
+        if _sp.exists():
+            try:
+                _sp.unlink()
+            except OSError:
+                pass
 
     _delete_job(job_id)
     return jsonify({'deleted': True, 'id': job_id})
@@ -537,12 +612,29 @@ def analyze_proxy(job_id):
     
     safe_title = ''.join(c for c in title[:40] if c.isalnum() or c in ' -_').strip() or job_id
     filename = f'{safe_title}.docx'
-    
+
+    # Send the transcript .docx plus the full-page screenshot (when available)
+    # so the analyzer can read the headline/subheadline from the promo page —
+    # the transcript alone (video audio) has neither.
+    files = {
+        'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    }
+    # Prefer the top-of-page clip (in-limits for the vision API); fall back to
+    # the full-page PNG for short pages that have no separate clip.
+    top_path = SCREENSHOTS_DIR / f'{job_id}_top.png'
+    full_path = SCREENSHOTS_DIR / f'{job_id}.png'
+    shot_path = top_path if top_path.exists() else (full_path if full_path.exists() else None)
+    if shot_path is not None:
+        try:
+            files['screenshot'] = (f'{safe_title}.png', shot_path.read_bytes(), 'image/png')
+        except Exception:
+            pass  # screenshot is a bonus — never block analysis on it
+
     analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
     try:
         resp = _requests.post(
             analyzer_url,
-            files={'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')},
+            files=files,
             timeout=120,
             stream=True,
         )

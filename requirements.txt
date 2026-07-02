@@ -7,3 +7,4 @@ beautifulsoup4==4.12.3
 playwright
 playwright-stealth
 python-docx
+anthropic

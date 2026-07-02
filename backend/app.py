@@ -98,12 +98,32 @@ def _find_duplicate(source_url: str) -> dict | None:
 
 # ── docx generation ─────────────────────────────────────────────────────────
 
-def _build_docx(title: str, transcript_text: str) -> bytes:
-    """Return .docx bytes for the given transcript."""
+def _build_docx(title: str, transcript_text: str,
+                headline: str = '', subheadline: str = '') -> bytes:
+    """Return .docx bytes for the given transcript.
+
+    When a headline/subheadline was extracted from the promo page, render them
+    above the transcript — headline largest and bold, subheadline smaller and
+    bold. Falls back to the plain title heading when neither is available.
+    """
     try:
         from docx import Document
+        from docx.shared import Pt
         doc = Document()
-        doc.add_heading(title or 'Transcript', level=1)
+        if headline or subheadline:
+            if headline:
+                p = doc.add_paragraph()
+                run = p.add_run(headline)
+                run.bold = True
+                run.font.size = Pt(26)
+            if subheadline:
+                p = doc.add_paragraph()
+                run = p.add_run(subheadline)
+                run.bold = True
+                run.font.size = Pt(16)
+            doc.add_paragraph()  # spacer before the transcript
+        else:
+            doc.add_heading(title or 'Transcript', level=1)
         # Split into paragraphs on double newline, add each as a paragraph
         paragraphs = [p.strip() for p in transcript_text.split('\n\n') if p.strip()]
         if not paragraphs:
@@ -259,6 +279,68 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
         _update_job(job_id, {'screenshot_error': str(exc)[:200]})
 
 
+# Cheap, fast vision model for headline/subheadline extraction.
+HEADLINE_MODEL = 'claude-haiku-4-5-20251001'
+
+
+def _extract_headline(job_id: str) -> None:
+    """Read the promo headline + subheadline off the top-of-page screenshot via
+    Claude vision and store them on the job. Best-effort — never raises, and
+    no-ops when ANTHROPIC_API_KEY is unset so it can't break the pipeline.
+
+    Rule (matches the analyzer): text ABOVE the video is the headline/subheadline;
+    if there is none above the video, read them from the video thumbnail;
+    otherwise ignore any text inside the thumbnail.
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return
+    shot = SCREENSHOTS_DIR / f'{job_id}_top.png'
+    if not shot.exists():
+        shot = SCREENSHOTS_DIR / f'{job_id}.png'
+    if not shot.exists():
+        return
+    try:
+        import base64
+        import anthropic
+        img_b64 = base64.standard_b64encode(shot.read_bytes()).decode('ascii')
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=HEADLINE_MODEL,
+            max_tokens=400,
+            messages=[{
+                'role': 'user',
+                'content': [
+                    {'type': 'image', 'source': {
+                        'type': 'base64', 'media_type': 'image/png', 'data': img_b64,
+                    }},
+                    {'type': 'text', 'text': (
+                        'This is a screenshot of the top of a financial promo landing page. '
+                        'Extract the main HEADLINE and SUBHEADLINE of the promo.\n'
+                        'Rules: if there is text ABOVE the video, that text is the '
+                        'headline/subheadline. If there is NO text above the video, read the '
+                        'headline/subheadline from the video thumbnail shown in the image. '
+                        'Otherwise ignore any text inside the video thumbnail.\n'
+                        'Return ONLY compact JSON: {"headline": "...", "subheadline": "..."}. '
+                        'Use "" for a field that is not present. No other text.'
+                    )},
+                ],
+            }],
+        )
+        raw = ''.join(
+            b.text for b in msg.content if getattr(b, 'type', '') == 'text'
+        ).strip()
+        data = {}
+        if '{' in raw and '}' in raw:
+            data = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
+        _update_job(job_id, {
+            'headline': (data.get('headline') or '').strip(),
+            'subheadline': (data.get('subheadline') or '').strip(),
+        })
+    except Exception as exc:
+        _update_job(job_id, {'headline_error': str(exc)[:200]})
+
+
 def _run_pipeline(job_id: str, source_url: str) -> None:
     """
     Full rip pipeline: fetch → detect → download → screenshot → Rev submit.
@@ -293,6 +375,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 # to the source URL otherwise. Non-blocking on failure.
                 _shot_url = (job.get('page_url') if job else None) or source_url
                 _take_screenshot(job_id, _shot_url)
+                _extract_headline(job_id)
                 _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
@@ -391,6 +474,7 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
         _shot_host = _up_shot(_shot_url).netloc.lower().lstrip('www.')
         if not any(_shot_host.endswith(d) for d in _GENERIC_EXTRACTOR_DOMAINS):
             _take_screenshot(job_id, _shot_url)
+            _extract_headline(job_id)
         _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
 
         # Step 5: Rev AI — submit video URL directly, no upload needed
@@ -459,6 +543,8 @@ def rip():
         'rev_transcript_url': '',
         'transcript_text': '',
         'has_screenshot': False,
+        'headline': '',
+        'subheadline': '',
         'pipeline_step': 'queued',
         'error': '',
         'created_at': now,
@@ -530,7 +616,10 @@ def get_transcript_docx(job_id):
         return jsonify({'error': 'Transcript not available yet'}), 400
 
     try:
-        docx_bytes = _build_docx(job.get('title', ''), text)
+        docx_bytes = _build_docx(
+            job.get('title', ''), text,
+            job.get('headline', ''), job.get('subheadline', ''),
+        )
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
 
@@ -606,7 +695,10 @@ def analyze_proxy(job_id):
     
     title = job.get('title', '') or job_id
     try:
-        docx_bytes = _build_docx(title, text)
+        docx_bytes = _build_docx(
+            title, text,
+            job.get('headline', ''), job.get('subheadline', ''),
+        )
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
     

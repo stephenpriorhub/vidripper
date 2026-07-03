@@ -759,11 +759,24 @@ def analyze_proxy(job_id):
         except Exception:
             pass  # screenshot is a bonus — never block analysis on it
 
+    # The analyzer's /api/analyze requires OxfordHub auth. The hub session cookie
+    # is scoped to .oxfordhub.app, so the browser already sent it to this
+    # subdomain — forward it so the analyzer can resolve the signed-in user (and
+    # attribute the promo to them). Fall back to the server-to-server token.
+    fwd_headers = {}
+    _cookie = request.headers.get('Cookie')
+    if _cookie:
+        fwd_headers['Cookie'] = _cookie
+    _hub_token = os.environ.get('HUB_API_TOKEN')
+    if _hub_token:
+        fwd_headers['x-hub-token'] = _hub_token
+
     analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
     try:
         resp = _requests.post(
             analyzer_url,
             files=files,
+            headers=fwd_headers,
             timeout=120,
             stream=True,
         )

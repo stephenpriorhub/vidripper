@@ -527,6 +527,16 @@ def index():
     return send_from_directory(str(FRONTEND_DIR), 'index.html')
 
 
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(str(FRONTEND_DIR), 'favicon.ico', mimetype='image/x-icon')
+
+
+@app.route('/icon.png')
+def icon_png():
+    return send_from_directory(str(FRONTEND_DIR), 'icon.png', mimetype='image/png')
+
+
 @app.route('/api/ping')
 def ping():
     return jsonify({'status': 'ok', 'service': 'vidripper'})

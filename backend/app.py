@@ -773,11 +773,14 @@ def analyze_proxy(job_id):
 
     analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
     try:
+        # (connect, read) — the analyzer does heavy pre-stream setup (brain
+        # context, GitHub calls, calibration) then a long Claude generation, so
+        # allow a generous read window before giving up.
         resp = _requests.post(
             analyzer_url,
             files=files,
             headers=fwd_headers,
-            timeout=120,
+            timeout=(15, 300),
             stream=True,
         )
     except Exception as exc:

@@ -249,6 +249,7 @@ const API = '';
 const PROMO_ANALYZER_URL = 'https://analyzer.oxfordhub.app';
 
 let activePolls = {};   // job_id -> intervalId (Rev transcript polling)
+let analysisPolls = {}; // job_id -> intervalId (analysis completion polling)
 let jobsById = {};      // job_id -> job (so modals can read headline fields)
 let transcriptionProgress = {}; // job_id -> { submittedAt, pct }
 
@@ -445,6 +446,10 @@ async function loadJobs() {
           activePolls[job.id] = setInterval(() => pollTranscript(job.id), 15000);
         }
       }
+      // Resume analysis polling if a job is mid-analysis (e.g. after a refresh)
+      if (job.analyze_status === 'analyzing' && !job.promo_review_id) {
+        startAnalysisPoll(job.id);
+      }
     });
   } catch (e) {
     document.getElementById('jobsContainer').innerHTML =
@@ -536,15 +541,17 @@ function cardHTML(job) {
     pageImgBtn = `<a class="btn-sm btn-secondary" href="${esc(job.thumbnail_url)}" target="_blank" rel="noopener">Page Image</a>`;
   }
 
-  // Analyze button
+  // Analyze button — analysis runs async server-side; state is driven by the job.
   let analyzeBtn = '';
   if (revStatus === 'complete' && job.transcript_text) {
     if (job.promo_review_id) {
       analyzeBtn = `<a class="btn-sm btn-view-analysis" href="${PROMO_ANALYZER_URL}/?review=${job.promo_review_id}" target="_blank" rel="noopener">View Analysis</a>`;
+    } else if (job.analyze_status === 'analyzing') {
+      analyzeBtn = `<button class="btn-sm btn-analyze analyzing" disabled id="analyze-${job.id}">Analyzing...</button>`;
     } else {
-      const analyzingClass = job._analyzing ? ' analyzing' : '';
-      const analyzingDisabled = job._analyzing ? ' disabled' : '';
-      analyzeBtn = `<button class="btn-sm btn-analyze${analyzingClass}"${analyzingDisabled} id="analyze-${job.id}" onclick="analyzeTranscript('${job.id}')">Analyze</button>`;
+      const errTitle = job.analyze_error ? ` title="${esc(job.analyze_error)}"` : '';
+      const label = job.analyze_status === 'error' ? 'Retry Analyze' : 'Analyze';
+      analyzeBtn = `<button class="btn-sm btn-analyze" id="analyze-${job.id}"${errTitle} onclick="analyzeTranscript('${job.id}')">${label}</button>`;
     }
   }
 
@@ -689,32 +696,39 @@ async function analyzeTranscript(jobId) {
   if (btn) { btn.textContent = 'Analyzing...'; btn.disabled = true; btn.classList.add('analyzing'); }
 
   try {
-    const aResp = await fetch(`${API}/api/jobs/${jobId}/analyze-proxy`, {
-      method: 'POST',
-    });
-
-    const aData = await aResp.json();
-    if (!aResp.ok) {
+    // Analysis runs async server-side (it can outlast the HTTP request timeout).
+    // This returns 202 immediately; we then poll the job for the result.
+    const aResp = await fetch(`${API}/api/jobs/${jobId}/analyze-proxy`, { method: 'POST' });
+    const aData = await aResp.json().catch(() => ({}));
+    if (!aResp.ok && aResp.status !== 202) {
       throw new Error(aData.error || `Analyzer returned ${aResp.status}`);
     }
-
-    const reviewId = aData.review_id || null;
-    if (!reviewId) {
-      throw new Error('Analysis completed but no review ID returned');
-    }
-
-    // 5. Persist review ID on the job
-    await fetch(`${API}/api/jobs/${jobId}/set-review`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({promo_review_id: reviewId}),
-    });
-
-    await loadJobs();
+    if (aData.review_id) { await loadJobs(); return; }  // already done
+    startAnalysisPoll(jobId);
   } catch (e) {
     if (btn) { btn.textContent = 'Analyze'; btn.disabled = false; btn.classList.remove('analyzing'); }
     alert(`Analysis failed: ${e.message}`);
   }
+}
+
+// Poll a job until analysis finishes (review id) or errors. Survives re-renders
+// because button state is driven by the job's analyze_status.
+function startAnalysisPoll(jobId) {
+  if (analysisPolls[jobId]) return;
+  analysisPolls[jobId] = setInterval(async () => {
+    try {
+      const r = await fetch(`${API}/api/jobs/${jobId}`);
+      const j = await r.json();
+      if (j.promo_review_id) {
+        clearInterval(analysisPolls[jobId]); delete analysisPolls[jobId];
+        await loadJobs();
+      } else if (j.analyze_status === 'error') {
+        clearInterval(analysisPolls[jobId]); delete analysisPolls[jobId];
+        await loadJobs();
+        alert(`Analysis failed: ${j.analyze_error || 'unknown error'}`);
+      }
+    } catch (e) { /* transient — keep polling */ }
+  }, 5000);
 }
 
 // ── delete ────────────────────────────────────────────────────────────────

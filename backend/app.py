@@ -580,6 +580,8 @@ def rip():
         'headline': '',
         'subhead': '',
         'subhead2': '',
+        'analyze_status': '',
+        'analyze_error': '',
         'pipeline_step': 'queued',
         'error': '',
         'created_at': now,
@@ -717,92 +719,103 @@ def delete_job(job_id):
 
 
 
-@app.route('/api/jobs/<job_id>/analyze-proxy', methods=['POST'])
-def analyze_proxy(job_id):
-    """Proxy transcript to Promo Analyzer to avoid CORS."""
+def _run_analysis(job_id: str, cookie: str) -> None:
+    """Background worker: build the transcript .docx (+ screenshot), POST it to
+    the Promo Analyzer, and store the returned review id on the job.
+
+    Runs in a thread because a full analysis can exceed the platform's HTTP
+    request timeout — a synchronous proxy hit Railway's edge limit and returned
+    "upstream error". The frontend polls the job for promo_review_id /
+    analyze_status instead. Best-effort — never raises.
+    """
+    import re as _re
     import requests as _requests
-    job = _get_job(job_id)
-    if not job:
-        return jsonify({'error': 'Job not found'}), 404
-    
-    text = job.get('transcript_text', '')
-    if not text:
-        return jsonify({'error': 'Transcript not available yet'}), 400
-    
-    title = job.get('title', '') or job_id
     try:
+        job = _get_job(job_id)
+        if not job:
+            return
+        text = job.get('transcript_text', '')
+        title = job.get('title', '') or job_id
         docx_bytes = _build_docx(
             title, text,
             job.get('eyebrow', ''), job.get('headline', ''),
             job.get('subhead', ''), job.get('subhead2', ''),
         )
-    except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
-    
-    safe_title = ''.join(c for c in title[:40] if c.isalnum() or c in ' -_').strip() or job_id
-    filename = f'{safe_title}.docx'
+        safe_title = ''.join(c for c in title[:40] if c.isalnum() or c in ' -_').strip() or job_id
+        filename = f'{safe_title}.docx'
 
-    # Send the transcript .docx plus the full-page screenshot (when available)
-    # so the analyzer can read the headline/subheadline from the promo page —
-    # the transcript alone (video audio) has neither.
-    files = {
-        'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
-    }
-    # Prefer the top-of-page clip (in-limits for the vision API); fall back to
-    # the full-page PNG for short pages that have no separate clip.
-    top_path = SCREENSHOTS_DIR / f'{job_id}_top.png'
-    full_path = SCREENSHOTS_DIR / f'{job_id}.png'
-    shot_path = top_path if top_path.exists() else (full_path if full_path.exists() else None)
-    if shot_path is not None:
-        try:
-            files['screenshot'] = (f'{safe_title}.png', shot_path.read_bytes(), 'image/png')
-        except Exception:
-            pass  # screenshot is a bonus — never block analysis on it
+        # Transcript .docx + the top-of-page screenshot (when available) so the
+        # analyzer can read the headline/subheadline (transcript is audio only).
+        files = {
+            'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+        }
+        top_path = SCREENSHOTS_DIR / f'{job_id}_top.png'
+        full_path = SCREENSHOTS_DIR / f'{job_id}.png'
+        shot_path = top_path if top_path.exists() else (full_path if full_path.exists() else None)
+        if shot_path is not None:
+            try:
+                files['screenshot'] = (f'{safe_title}.png', shot_path.read_bytes(), 'image/png')
+            except Exception:
+                pass  # screenshot is a bonus — never block analysis on it
 
-    # The analyzer's /api/analyze requires OxfordHub auth. The hub session cookie
-    # is scoped to .oxfordhub.app, so the browser already sent it to this
-    # subdomain — forward it so the analyzer can resolve the signed-in user (and
-    # attribute the promo to them). Fall back to the server-to-server token.
-    fwd_headers = {}
-    _cookie = request.headers.get('Cookie')
-    if _cookie:
-        fwd_headers['Cookie'] = _cookie
-    _hub_token = os.environ.get('HUB_API_TOKEN')
-    if _hub_token:
-        fwd_headers['x-hub-token'] = _hub_token
+        # Forward the OxfordHub session cookie so the analyzer's auth resolves the
+        # signed-in user; fall back to the server-to-server token.
+        fwd_headers = {}
+        if cookie:
+            fwd_headers['Cookie'] = cookie
+        _hub_token = os.environ.get('HUB_API_TOKEN')
+        if _hub_token:
+            fwd_headers['x-hub-token'] = _hub_token
 
-    analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
-    try:
-        # (connect, read) — the analyzer does heavy pre-stream setup (brain
-        # context, GitHub calls, calibration) then a long Claude generation, so
-        # allow a generous read window before giving up.
+        analyzer_url = 'https://analyzer.oxfordhub.app/api/analyze'
         resp = _requests.post(
-            analyzer_url,
-            files=files,
-            headers=fwd_headers,
-            timeout=(15, 300),
-            stream=True,
+            analyzer_url, files=files, headers=fwd_headers, timeout=(15, 600),
         )
+        full_text = resp.text
+        review_id = None
+        meta_match = _re.search(r'\[META\](.*?)\[/META\]', full_text, _re.DOTALL)
+        if meta_match:
+            try:
+                review_id = json.loads(meta_match.group(1)).get('reviewId')
+            except Exception:
+                pass
+        if review_id:
+            _update_job(job_id, {
+                'promo_review_id': review_id,
+                'analyze_status': 'done',
+                'analyze_error': '',
+            })
+        else:
+            _update_job(job_id, {
+                'analyze_status': 'error',
+                'analyze_error': f'Analyzer returned no review id: {full_text[:180]}',
+            })
     except Exception as exc:
-        return jsonify({'error': f'Failed to reach analyzer: {exc}'}), 502
-    
-    # Read full response, extract [META]{reviewId}[/META]
-    full_text = resp.text
-    import re as _re
-    meta_match = _re.search(r'\[META\](.*?)\[/META\]', full_text, _re.DOTALL)
-    review_id = None
-    if meta_match:
-        try:
-            meta = json.loads(meta_match.group(1))
-            review_id = meta.get('reviewId')
-        except Exception:
-            pass
-    
-    if not review_id:
-        return jsonify({'error': 'Analyzer did not return a review ID', 'raw': full_text[:500]}), 500
-    
-    _update_job(job_id, {'promo_review_id': review_id})
-    return jsonify({'review_id': review_id})
+        _update_job(job_id, {'analyze_status': 'error', 'analyze_error': str(exc)[:200]})
+
+
+@app.route('/api/jobs/<job_id>/analyze-proxy', methods=['POST'])
+def analyze_proxy(job_id):
+    """Kick off analysis in the background and return immediately (202).
+
+    The frontend polls the job for promo_review_id / analyze_status. Async
+    because a full analysis can outlast the platform HTTP request timeout.
+    """
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    if not job.get('transcript_text'):
+        return jsonify({'error': 'Transcript not available yet'}), 400
+    if job.get('promo_review_id'):
+        return jsonify({'status': 'done', 'review_id': job['promo_review_id']}), 200
+    if job.get('analyze_status') == 'analyzing':
+        return jsonify({'status': 'analyzing'}), 202
+
+    # Capture the hub cookie now (request context) to forward from the thread.
+    cookie = request.headers.get('Cookie', '')
+    _update_job(job_id, {'analyze_status': 'analyzing', 'analyze_error': ''})
+    threading.Thread(target=_run_analysis, args=(job_id, cookie), daemon=True).start()
+    return jsonify({'status': 'analyzing'}), 202
 
 @app.route('/api/jobs/<job_id>/set-review', methods=['POST'])
 def set_review(job_id):

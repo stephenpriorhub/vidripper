@@ -51,7 +51,7 @@ vidripper/
 - `_take_screenshot` captures a **full-page** PNG (`{job_id}.png`, entire scrollable page — auto-scrolls first to trigger lazy-loaded images) for viewing/download, plus a **top-of-page clip** (`{job_id}_top.png`, from the top through the video + CTA button, capped ≤8000px) for the Promo Analyzer's vision API.
 - Screenshots are taken for **bookmarklet/gated jobs too** — the original promo page (`page_url`) is rendered using uploaded cookies (`data/cookies/{domain}.txt`) so gated pages render authenticated. Non-blocking on failure (`screenshot_error`).
 - Generic-extractor domains (Fox Business, etc.) are skipped — news clips, not promos.
-- `analyze-proxy` sends the top clip (fallback: full page) to the analyzer alongside the transcript `.docx`, so the analyzer reads the headline/subheadline from the image (transcript is audio only).
+- `analyze-proxy` sends only the transcript `.docx` to the analyzer (async, in a background thread). The extracted headline/subheadline is already rendered at the top of that doc, so the screenshot image is NOT sent — the analyzer reads the headline as text.
 - After the screenshot, `_extract_headline` runs a Claude vision call on the top clip to pull the promo headline block onto the job as `eyebrow` / `headline` / `subhead` / `subhead2` (rule: read the text above the video; else the video thumbnail; else ignore thumbnail text). `_build_docx` renders them above the transcript in descending prominence — eyebrow 13pt, headline 26pt, subhead 16pt, subhead2 14pt, all bold — falling back to the plain title heading when absent. Requires `ANTHROPIC_API_KEY`.
 
 ## Data Model

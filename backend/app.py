@@ -744,19 +744,13 @@ def _run_analysis(job_id: str, cookie: str) -> None:
         safe_title = ''.join(c for c in title[:40] if c.isalnum() or c in ' -_').strip() or job_id
         filename = f'{safe_title}.docx'
 
-        # Transcript .docx + the top-of-page screenshot (when available) so the
-        # analyzer can read the headline/subheadline (transcript is audio only).
+        # Send only the transcript .docx. The extracted headline/subheadline is
+        # already rendered at the top of that doc, so the analyzer does not need
+        # the screenshot image — keeping the payload small avoids extra upload
+        # latency on the analyze call.
         files = {
             'file': (filename, docx_bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
         }
-        top_path = SCREENSHOTS_DIR / f'{job_id}_top.png'
-        full_path = SCREENSHOTS_DIR / f'{job_id}.png'
-        shot_path = top_path if top_path.exists() else (full_path if full_path.exists() else None)
-        if shot_path is not None:
-            try:
-                files['screenshot'] = (f'{safe_title}.png', shot_path.read_bytes(), 'image/png')
-            except Exception:
-                pass  # screenshot is a bonus — never block analysis on it
 
         # Forward the OxfordHub session cookie so the analyzer's auth resolves the
         # signed-in user; fall back to the server-to-server token.

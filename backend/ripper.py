@@ -395,6 +395,10 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
         '--no-playlist',
         '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
         '--merge-output-format', 'mp4',
+        # Remux to a real MP4 container. HLS sources (Brightcove) deliver MPEG-TS
+        # segments; without this, a single combined stream is saved as raw .ts
+        # under a .mp4 name and won't open in players. Requires ffmpeg.
+        '--remux-video', 'mp4',
         '--output', '',  # filled below after tmp_dir is created
         '--no-warnings',
     ]
@@ -433,12 +437,14 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
                 )
             raise RuntimeError(f'yt-dlp failed: {err}')
 
-        # Find the downloaded file
+        # Find the downloaded file — prefer the remuxed .mp4 if an intermediate
+        # (e.g. .ts) is also left behind.
         files = list(Path(tmp_dir).glob('video.*'))
         if not files:
             raise RuntimeError('yt-dlp produced no output file')
 
-        downloaded = files[0]
+        mp4s = [f for f in files if f.suffix.lower() == '.mp4']
+        downloaded = mp4s[0] if mp4s else files[0]
         shutil.move(str(downloaded), dest_path)
         return dest_path
     finally:

@@ -9,7 +9,9 @@ builder = "nixpacks"
 # the var ends up unset at runtime and Playwright can't find the binary (the bug
 # that made screenshots fail with "Executable doesn't exist"). Set env vars in the
 # Railway dashboard if a custom path is ever needed.
-buildCommand = "pip install playwright playwright-stealth && playwright install --with-deps chromium"
+# ffmpeg is required by yt-dlp to remux HLS (Brightcove) TS streams into a real
+# MP4 container — without it, downloads are raw .ts saved as .mp4 and won't play.
+buildCommand = "apt-get update && apt-get install -y ffmpeg && pip install playwright playwright-stealth && playwright install --with-deps chromium"
 
 [deploy]
 startCommand = "python backend/serve.py"

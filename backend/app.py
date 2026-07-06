@@ -434,7 +434,14 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 return
             html, title, thumbnail = '', source_url, ''
         else:
-            html, title, thumbnail = ripper.fetch_page(source_url)
+            try:
+                html, title, thumbnail = ripper.fetch_page(source_url)
+            except Exception:
+                # Plain-requests fetch can 403 on Cloudflare-protected promo
+                # pages (e.g. Vidalytics landing pages). Fall through with empty
+                # HTML so detection returns 'unknown' and the Playwright-rendered
+                # retry below gets a real chance instead of failing the job.
+                html, title, thumbnail = '', source_url, ''
         _update_job(job_id, {'title': title, 'thumbnail_url': thumbnail})
 
         # Domains known to work with yt-dlp's generic extractor — skip Playwright

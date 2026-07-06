@@ -55,6 +55,74 @@ HEADERS = {
 }
 
 
+def resolve_vidalytics_stream(account_id: str, embed_id: str) -> str:
+    """
+    Resolve a Vidalytics embed to its playable HLS master manifest URL.
+
+    Vidalytics does NOT serve a scrapable video page at
+    fast.vidalytics.com/embeds/{account}/{embed}/ — that path is Cloudflare-
+    protected and returns 403 to yt-dlp's generic extractor (this was the root
+    cause of the "[generic] Unable to download webpage: HTTP Error 403" failure).
+
+    The real media lives at a DIFFERENT id than the embed id:
+        https://fast.vidalytics.com/video/{account}/{videoId}/{a}/{b}__FFMPEG/stream.m3u8
+    The {videoId} and full stream path are baked into the embed's loader.min.js,
+    which IS publicly fetchable (returns 200). An embed can reference several
+    videos (main VSL + short intro/CTA loops); we pick the one with the longest
+    duration, which is reliably the main video.
+
+    The resolved stream.m3u8 CDN URL needs NO special headers (200 with a bare
+    request) and yt-dlp's generic extractor parses it into an adaptive-bitrate
+    HLS ladder (up to 1080p) with no further work.
+
+    Returns the master manifest URL, or '' if it can't be resolved.
+    """
+    loader_url = (
+        f'https://fast.vidalytics.com/embeds/{account_id}/{embed_id}/loader.min.js'
+    )
+    try:
+        resp = requests.get(loader_url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+    except Exception:
+        return ''
+
+    # loader.min.js escapes slashes as \/ — unescape so URLs match cleanly.
+    src = resp.text.replace('\\/', '/')
+
+    # Every playable rendition is referenced by a full stream.m3u8 path keyed by
+    # the media videoId (distinct from the embed id).
+    stream_re = re.compile(
+        r'fast\.vidalytics\.com/video/'
+        + re.escape(account_id)
+        + r'/([A-Za-z0-9_-]+)/\d+/\d+__FFMPEG/stream\.m3u8'
+    )
+    streams: dict[str, str] = {}
+    for m in stream_re.finditer(src):
+        streams.setdefault(m.group(1), 'https://' + m.group(0))
+    if not streams:
+        return ''
+
+    # Pick the main video: the one whose nearby config carries the longest
+    # "duration". Short intro/CTA loops are only a few seconds.
+    best_id, best_dur = None, -1.0
+    for dm in re.finditer(r'"duration"\s*:\s*([\d.]+)', src):
+        try:
+            dur = float(dm.group(1))
+        except ValueError:
+            continue
+        ctx = src[max(0, dm.start() - 400):dm.start() + 100]
+        for vid in re.findall(
+            r'/video/' + re.escape(account_id) + r'/([A-Za-z0-9_-]+)/', ctx
+        ):
+            if vid in streams and dur > best_dur:
+                best_dur, best_id = dur, vid
+
+    if best_id is None:
+        # No duration hint — fall back to the first stream found.
+        best_id = next(iter(streams))
+    return streams[best_id]
+
+
 def _load_cookies_for_playwright(url: str) -> list:
     """
     Load a Netscape cookies.txt file and convert to Playwright cookie dicts.
@@ -222,6 +290,15 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
                     )
                     if acc_match:
                         extra['vidalytics_account_id'] = acc_match.group(1)
+                        # Resolve the real HLS manifest now (via loader.min.js) and
+                        # cache it so probe + download reuse the same URL. The embed
+                        # page itself is Cloudflare-protected (403), so we must NOT
+                        # hand that URL to yt-dlp.
+                        stream_url = resolve_vidalytics_stream(
+                            acc_match.group(1), match.group(1)
+                        )
+                        if stream_url:
+                            extra['vidalytics_stream_url'] = stream_url
                 if platform == 'brightcove':
                     for p in BC_ACCOUNT_PATTERNS:
                         m = re.search(p, html, re.IGNORECASE)
@@ -266,6 +343,15 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
         return source_url
     elif platform == 'vidalytics':
         account_id = extra.get('vidalytics_account_id', '')
+        # A resolved stream.m3u8 may already be cached on `extra` (set during
+        # detection) — prefer it so we don't hit the network twice.
+        stream_url = extra.get('vidalytics_stream_url', '')
+        if not stream_url and account_id and video_id:
+            stream_url = resolve_vidalytics_stream(account_id, video_id)
+        if stream_url:
+            return stream_url
+        # Last resort: the Cloudflare-protected embed page. yt-dlp will very
+        # likely 403 here, but it's better than pasting nothing.
         if account_id:
             return f'https://fast.vidalytics.com/embeds/{account_id}/{video_id}/'
         return source_url  # fallback to original page
@@ -417,7 +503,9 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            # Long VSLs (e.g. ~58-min Vidalytics promos) take several minutes to
+            # download over HLS + remux to MP4. 20 min ceiling so they complete.
+            timeout=1200,
         )
         if result.returncode != 0:
             err = result.stderr[:500]

@@ -288,6 +288,84 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
 HEADLINE_MODEL = 'claude-haiku-4-5-20251001'
 
 
+def _ensure_poster(job_id: str, platform: str = '', account_id: str = '',
+                   embed_id: str = '') -> bool:
+    """Make sure a poster image exists at SCREENSHOTS_DIR/{job_id}_poster.png.
+
+    The promo headline is frequently baked into the video's pre-play thumbnail
+    rather than the page text — and the page itself is often Cloudflare-gated so
+    it can't be screenshotted. The poster lives on the video CDN, so we can get
+    it: prefer the platform-native thumbnail (Vidalytics loader config), and
+    fall back to an ffmpeg still from the downloaded MP4. Best-effort.
+    """
+    poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
+    if poster.exists():
+        return True
+    # 1) Vidalytics native poster/thumbnail (where the headline usually lives).
+    if platform == 'vidalytics' and account_id and embed_id:
+        try:
+            url = ripper.resolve_vidalytics_poster(account_id, embed_id)
+            if url and ripper.download_image(url, str(poster)):
+                return True
+        except Exception:
+            pass
+    # 2) Fallback: grab an early frame from the downloaded video.
+    mp4 = VIDEOS_DIR / f'{job_id}.mp4'
+    if mp4.exists():
+        try:
+            return ripper.extract_poster_frame(str(mp4), str(poster))
+        except Exception:
+            return False
+    return False
+
+
+def _headline_from_image(shot_path, api_key: str) -> dict:
+    """Run the Claude vision headline extraction on a single image. Returns the
+    parsed dict (may be empty). Raises on API failure so the caller can decide."""
+    import base64
+    import anthropic
+    img_b64 = base64.standard_b64encode(shot_path.read_bytes()).decode('ascii')
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model=HEADLINE_MODEL,
+        max_tokens=500,
+        messages=[{
+            'role': 'user',
+            'content': [
+                {'type': 'image', 'source': {
+                    'type': 'base64', 'media_type': 'image/png', 'data': img_b64,
+                }},
+                {'type': 'text', 'text': (
+                    'This image is either the top of a financial promo landing '
+                    'page or the pre-play thumbnail of its VSL video. '
+                    'Extract the promo headline block, verbatim, in these parts:\n'
+                    '- "eyebrow": the small pre-headline line ABOVE the headline '
+                    '(e.g. "FORMER CIA ADVISOR RELEASES:").\n'
+                    '- "headline": the single largest / most prominent line '
+                    '(e.g. "THE AI BLACK PAPER").\n'
+                    '- "subhead": the line directly under the headline '
+                    '(e.g. "WARNS THE AI BUBBLE IS SET TO POP ON JULY 29TH AT 6:30PM").\n'
+                    '- "subhead2": a secondary subhead or pull-quote, often below the '
+                    'video (e.g. "The Dow Could Drop By 80% - Former CIA Advisor Jim '
+                    'Rickards").\n'
+                    'Which text to read: if there is promo text ABOVE the video, use '
+                    'that; otherwise read the headline block from the video thumbnail '
+                    'shown in the image. If the image is a bot/security check or has '
+                    'no promo headline at all, return all empty strings.\n'
+                    'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
+                    'subhead2. Use "" for any part that is not present. No other text.'
+                )},
+            ],
+        }],
+    )
+    raw = ''.join(
+        b.text for b in msg.content if getattr(b, 'type', '') == 'text'
+    ).strip()
+    if '{' in raw and '}' in raw:
+        return json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
+    return {}
+
+
 def _extract_headline(job_id: str) -> None:
     """Read the promo headline block off the top-of-page screenshot via Claude
     vision and store it on the job. Best-effort — never raises, and no-ops when
@@ -308,58 +386,35 @@ def _extract_headline(job_id: str) -> None:
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         return
-    shot = SCREENSHOTS_DIR / f'{job_id}_top.png'
-    if not shot.exists():
-        shot = SCREENSHOTS_DIR / f'{job_id}.png'
-    if not shot.exists():
+    # Candidate images, in priority order:
+    #   1. page top-clip  — headline text ABOVE the video (normal promos)
+    #   2. video poster   — headline baked into the thumbnail (Cloudflare-gated
+    #                        promos we can't screenshot, e.g. Porter & Company)
+    #   3. full-page      — last resort
+    # Use the first image that yields a real headline; the page clip returns
+    # empty for a Cloudflare "verify you are human" interstitial, so we fall
+    # through to the poster automatically.
+    top = SCREENSHOTS_DIR / f'{job_id}_top.png'
+    poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
+    full = SCREENSHOTS_DIR / f'{job_id}.png'
+    if not poster.exists():
+        _ensure_poster(job_id)  # ffmpeg fallback if no native thumbnail was saved
+    candidates = [p for p in (top, poster, full) if p.exists()]
+    if not candidates:
         return
     try:
-        import base64
-        import anthropic
-        img_b64 = base64.standard_b64encode(shot.read_bytes()).decode('ascii')
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=HEADLINE_MODEL,
-            max_tokens=500,
-            messages=[{
-                'role': 'user',
-                'content': [
-                    {'type': 'image', 'source': {
-                        'type': 'base64', 'media_type': 'image/png', 'data': img_b64,
-                    }},
-                    {'type': 'text', 'text': (
-                        'This is a screenshot of the top of a financial promo landing page. '
-                        'Extract the promo headline block, verbatim, in these parts:\n'
-                        '- "eyebrow": the small pre-headline line ABOVE the headline '
-                        '(e.g. "FORMER CIA ADVISOR RELEASES:").\n'
-                        '- "headline": the single largest / most prominent line '
-                        '(e.g. "THE AI BLACK PAPER").\n'
-                        '- "subhead": the line directly under the headline '
-                        '(e.g. "WARNS THE AI BUBBLE IS SET TO POP ON JULY 29TH AT 6:30PM").\n'
-                        '- "subhead2": a secondary subhead or pull-quote, often below the '
-                        'video (e.g. "The Dow Could Drop By 80% - Former CIA Advisor Jim '
-                        'Rickards").\n'
-                        'Which text to read: use the text ABOVE the video. If there is no '
-                        'text above the video, read the block from the video thumbnail shown '
-                        'in the image. Otherwise ignore any text inside the video thumbnail.\n'
-                        'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
-                        'subhead2. Use "" for any part that is not present. No other text.'
-                    )},
-                ],
-            }],
-        )
-        raw = ''.join(
-            b.text for b in msg.content if getattr(b, 'type', '') == 'text'
-        ).strip()
-        data = {}
-        if '{' in raw and '}' in raw:
-            data = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
-        _update_job(job_id, {
-            'eyebrow': (data.get('eyebrow') or '').strip(),
-            'headline': (data.get('headline') or '').strip(),
-            'subhead': (data.get('subhead') or '').strip(),
-            'subhead2': (data.get('subhead2') or '').strip(),
-        })
+        for shot in candidates:
+            data = _headline_from_image(shot, api_key)
+            fields = {
+                'eyebrow': (data.get('eyebrow') or '').strip(),
+                'headline': (data.get('headline') or '').strip(),
+                'subhead': (data.get('subhead') or '').strip(),
+                'subhead2': (data.get('subhead2') or '').strip(),
+            }
+            if any(fields.values()):
+                _update_job(job_id, fields)
+                return
+        # No image produced a headline — leave the fields empty.
     except Exception as exc:
         _update_job(job_id, {'headline_error': str(exc)[:200]})
 
@@ -435,6 +490,11 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 # fall back to the embed URL otherwise. Non-blocking on failure.
                 _shot_url = (job.get('page_url') if job else None) or source_url
                 _take_screenshot(job_id, _shot_url)
+                # The Vidalytics promo page is usually Cloudflare-gated (the
+                # screenshot above just captures the bot check), and the headline
+                # is baked into the video thumbnail — so grab the native poster
+                # from the Vidalytics CDN for headline extraction to read.
+                _ensure_poster(job_id, 'vidalytics', _acc, _vid)
                 _extract_headline(job_id)
                 _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
@@ -723,8 +783,8 @@ def delete_job(job_id):
         except OSError:
             pass
 
-    # Remove screenshots (full page + top clip) if present
-    for _shot in (f'{job_id}.png', f'{job_id}_top.png'):
+    # Remove screenshots (full page + top clip + poster) if present
+    for _shot in (f'{job_id}.png', f'{job_id}_top.png', f'{job_id}_poster.png'):
         _sp = SCREENSHOTS_DIR / _shot
         if _sp.exists():
             try:

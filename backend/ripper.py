@@ -123,6 +123,92 @@ def resolve_vidalytics_stream(account_id: str, embed_id: str) -> str:
     return streams[best_id]
 
 
+def resolve_vidalytics_poster(account_id: str, embed_id: str) -> str:
+    """
+    Resolve a Vidalytics embed to its pre-play poster/thumbnail image URL.
+
+    On many VSL promos the marketing HEADLINE is baked into this thumbnail
+    image (not the page text), and the promo page itself is Cloudflare-gated so
+    it can't be screenshotted server-side. The poster, however, lives on the
+    Vidalytics CDN and is reachable. Vidalytics stores it in the embed config
+    inside loader.min.js at `ui.thumbnail.default.source`.
+
+    Returns the image URL, or '' if it can't be resolved.
+    """
+    loader_url = (
+        f'https://fast.vidalytics.com/embeds/{account_id}/{embed_id}/loader.min.js'
+    )
+    try:
+        resp = requests.get(loader_url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+    except Exception:
+        return ''
+
+    src = resp.text.replace('\\/', '/')  # loader escapes slashes as \/
+
+    # Primary: the default (desktop) thumbnail source in the ui.thumbnail block.
+    m = re.search(
+        r'"thumbnail"\s*:\s*\{.*?"default"\s*:\s*\{\s*"source"\s*:\s*"([^"]+)"',
+        src,
+        re.DOTALL,
+    )
+    if not m:
+        # Looser: any "default":{"source":"<image>"} pointing at an image file.
+        m = re.search(
+            r'"default"\s*:\s*\{\s*"source"\s*:\s*"(https?://[^"]+?\.(?:png|jpe?g|webp)[^"]*)"',
+            src,
+            re.IGNORECASE,
+        )
+    if not m:
+        # Last resort: first image URL on the Vidalytics CDN in the config.
+        m = re.search(
+            r'"(https?://[^"]*vidalytics\.com/[^"]+?\.(?:png|jpe?g|webp)[^"]*)"',
+            src,
+            re.IGNORECASE,
+        )
+    return m.group(1) if m else ''
+
+
+def download_image(url: str, dest_path: str) -> bool:
+    """Download an image URL to dest_path. Best-effort — returns True on success."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        data = resp.content
+        if not data:
+            return False
+        with open(dest_path, 'wb') as f:
+            f.write(data)
+        return True
+    except Exception:
+        return False
+
+
+def extract_poster_frame(video_path: str, dest_path: str) -> bool:
+    """Grab a still frame from a downloaded video via ffmpeg as a poster image.
+
+    Fallback for when a platform-native thumbnail URL isn't available: VSLs
+    almost always open on a branded headline card, so an early frame usually
+    carries the headline. Seeks ~1s in to skip any fade-in; falls back to the
+    very first frame. Best-effort — returns True only if a non-empty PNG lands.
+    """
+    for seek in ('1', '0'):
+        try:
+            subprocess.run(
+                ['ffmpeg', '-y', '-ss', seek, '-i', video_path,
+                 '-frames:v', '1', '-q:v', '2', dest_path],
+                capture_output=True, timeout=60,
+            )
+        except Exception:
+            continue
+        try:
+            if Path(dest_path).is_file() and Path(dest_path).stat().st_size > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _load_cookies_for_playwright(url: str) -> list:
     """
     Load a Netscape cookies.txt file and convert to Playwright cookie dicts.

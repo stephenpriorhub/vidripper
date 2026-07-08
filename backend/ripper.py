@@ -146,16 +146,18 @@ def resolve_vidalytics_poster(account_id: str, embed_id: str) -> str:
 
     src = resp.text.replace('\\/', '/')  # loader escapes slashes as \/
 
-    # Primary: the default (desktop) thumbnail source in the ui.thumbnail block.
+    # Primary: the default thumbnail source inside the thumbnail block. The
+    # default object carries other keys first (from/to/type), so allow anything
+    # up to the source, but stay inside the default object (no nested braces).
     m = re.search(
-        r'"thumbnail"\s*:\s*\{.*?"default"\s*:\s*\{\s*"source"\s*:\s*"([^"]+)"',
+        r'"thumbnail"\s*:\s*\{.*?"default"\s*:\s*\{[^{}]*?"source"\s*:\s*"([^"]+)"',
         src,
         re.DOTALL,
     )
     if not m:
-        # Looser: any "default":{"source":"<image>"} pointing at an image file.
+        # Looser: any "default":{...,"source":"<image>"} pointing at an image.
         m = re.search(
-            r'"default"\s*:\s*\{\s*"source"\s*:\s*"(https?://[^"]+?\.(?:png|jpe?g|webp)[^"]*)"',
+            r'"default"\s*:\s*\{[^{}]*?"source"\s*:\s*"(https?://[^"]+?\.(?:png|jpe?g|webp)[^"]*)"',
             src,
             re.IGNORECASE,
         )

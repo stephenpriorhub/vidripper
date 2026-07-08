@@ -425,7 +425,18 @@ def _run_pipeline(job_id: str, source_url: str) -> None:
                 dest_path = str(VIDEOS_DIR / f'{job_id}.mp4')
                 ripper.download_video('vidalytics', _vid, source_url, dest_path, {'vidalytics_account_id': _acc})
                 _apply_video_metadata(job_id, source_url, 'vidalytics', _vid, {'vidalytics_account_id': _acc})
-                _update_job(job_id, {'local_video': f'/data/videos/{job_id}.mp4', 'pipeline_step': 'submitting_to_rev'})
+                _update_job(job_id, {
+                    'local_video': f'/data/videos/{job_id}.mp4',
+                    'pipeline_step': 'taking_screenshot',
+                })
+                job = _get_job(job_id)
+                # Screenshot the original promo page (page_url, set by the
+                # bookmarklet) so the analyzer gets the headline/subheadline;
+                # fall back to the embed URL otherwise. Non-blocking on failure.
+                _shot_url = (job.get('page_url') if job else None) or source_url
+                _take_screenshot(job_id, _shot_url)
+                _extract_headline(job_id)
+                _update_job(job_id, {'pipeline_step': 'submitting_to_rev'})
                 app_base = os.environ.get('APP_BASE_URL', 'https://vidripper.oxfordhub.app')
                 video_url = f'{app_base}/api/jobs/{job_id}/video'
                 now = datetime.now(timezone.utc).isoformat()

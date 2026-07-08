@@ -324,7 +324,19 @@ def _headline_from_image(shot_path, api_key: str) -> dict:
     parsed dict (may be empty). Raises on API failure so the caller can decide."""
     import base64
     import anthropic
-    img_b64 = base64.standard_b64encode(shot_path.read_bytes()).decode('ascii')
+    raw_bytes = shot_path.read_bytes()
+    # Sniff the media type from magic bytes — poster images pulled from the
+    # video CDN are usually JPEG, while our screenshots are PNG. Declaring the
+    # wrong type makes the vision API 400 ("specified image/png … but the image").
+    if raw_bytes[:3] == b'\xff\xd8\xff':
+        media_type = 'image/jpeg'
+    elif raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
+        media_type = 'image/webp'
+    elif raw_bytes[:6] in (b'GIF87a', b'GIF89a'):
+        media_type = 'image/gif'
+    else:
+        media_type = 'image/png'
+    img_b64 = base64.standard_b64encode(raw_bytes).decode('ascii')
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
         model=HEADLINE_MODEL,
@@ -333,7 +345,7 @@ def _headline_from_image(shot_path, api_key: str) -> dict:
             'role': 'user',
             'content': [
                 {'type': 'image', 'source': {
-                    'type': 'base64', 'media_type': 'image/png', 'data': img_b64,
+                    'type': 'base64', 'media_type': media_type, 'data': img_b64,
                 }},
                 {'type': 'text', 'text': (
                     'This image is either the top of a financial promo landing '
@@ -402,21 +414,26 @@ def _extract_headline(job_id: str) -> None:
     candidates = [p for p in (top, poster, full) if p.exists()]
     if not candidates:
         return
-    try:
-        for shot in candidates:
+    last_err = None
+    for shot in candidates:
+        try:
             data = _headline_from_image(shot, api_key)
-            fields = {
-                'eyebrow': (data.get('eyebrow') or '').strip(),
-                'headline': (data.get('headline') or '').strip(),
-                'subhead': (data.get('subhead') or '').strip(),
-                'subhead2': (data.get('subhead2') or '').strip(),
-            }
-            if any(fields.values()):
-                _update_job(job_id, fields)
-                return
-        # No image produced a headline — leave the fields empty.
-    except Exception as exc:
-        _update_job(job_id, {'headline_error': str(exc)[:200]})
+        except Exception as exc:
+            # One bad image (e.g. an API error) shouldn't abort the others.
+            last_err = str(exc)[:200]
+            continue
+        fields = {
+            'eyebrow': (data.get('eyebrow') or '').strip(),
+            'headline': (data.get('headline') or '').strip(),
+            'subhead': (data.get('subhead') or '').strip(),
+            'subhead2': (data.get('subhead2') or '').strip(),
+        }
+        if any(fields.values()):
+            _update_job(job_id, fields)
+            return
+    # No image produced a headline — record the last error if there was one.
+    if last_err:
+        _update_job(job_id, {'headline_error': last_err})
 
 
 def _run_pipeline(job_id: str, source_url: str) -> None:

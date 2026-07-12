@@ -507,6 +507,18 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
         manifest = resolve_cnn_manifest(source_url)
         return 'cnn', '', {'cnn_manifest_url': manifest}
 
+    # YouTube — a directly-pasted watch/shorts/live/youtu.be URL isn't caught by the
+    # HTML embed patterns below (which only match /embed/ and youtu.be inside page
+    # HTML). Classify from the source URL so the id is extracted cleanly AND so the
+    # platform-keyed cookie lookup finds an uploaded youtube.txt (needed to beat
+    # YouTube's intermittent 403s on datacenter IPs).
+    yt_direct = re.search(
+        r'(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})',
+        source_url or '',
+    )
+    if yt_direct:
+        return 'youtube', yt_direct.group(1), {}
+
     # Direct BrightCove player URL pasted as input — handle immediately
     bc_direct = re.match(
         r'https?://players\.brightcove\.net/(\d+)/([A-Za-z0-9_-]+)_default.*[?&]videoId=(\d+)',

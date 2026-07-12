@@ -2,7 +2,7 @@ flask==3.0.3
 requests==2.32.3
 werkzeug==3.0.3
 waitress==3.0.1
-yt-dlp==2024.12.23
+yt-dlp==2026.07.04
 beautifulsoup4==4.12.3
 playwright
 playwright-stealth

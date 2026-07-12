@@ -1,6 +1,8 @@
 """
 Platform detection and yt-dlp video download wrapper.
 """
+from __future__ import annotations
+
 import json
 import re
 import subprocess
@@ -347,6 +349,148 @@ def fetch_page(url: str) -> tuple[str, str, str]:
     return html, title, thumbnail
 
 
+_CNN_HOST_RE = re.compile(r'^https?://(?:www\.|edition\.|money\.|cnnespanol\.)?cnn\.com/', re.I)
+
+
+def is_cnn_url(url: str) -> bool:
+    """True for cnn.com video/article pages we resolve via the WBD FAST pipeline."""
+    return bool(_CNN_HOST_RE.match(url or ''))
+
+
+def cnn_proxy_url() -> str:
+    """
+    Optional residential/rotating proxy for the CNN fetch, config-driven and off
+    by default. CNN's WBD FAST manifest is IP-sensitive and may 503 from
+    datacenter IPs (e.g. Railway); routing the page-resolve + segment download
+    through a residential proxy fixes that. Set CNN_PROXY (preferred) or
+    RESIDENTIAL_PROXY_URL to e.g. http://user:pass@host:port.
+    """
+    import os
+    return (os.environ.get('CNN_PROXY') or os.environ.get('RESIDENTIAL_PROXY_URL') or '').strip()
+
+
+def _playwright_proxy(proxy_url: str) -> dict | None:
+    """Convert a proxy URL (optionally with user:pass@) to a Playwright proxy dict."""
+    if not proxy_url:
+        return None
+    from urllib.parse import urlparse as _up
+    pu = _up(proxy_url)
+    server = f'{pu.scheme}://{pu.hostname}' + (f':{pu.port}' if pu.port else '')
+    proxy: dict = {'server': server}
+    if pu.username:
+        proxy['username'] = pu.username
+    if pu.password:
+        proxy['password'] = pu.password
+    return proxy
+
+
+def resolve_cnn_manifest(url: str) -> str:
+    """
+    Resolve a CNN video page to its clean (ad-free) WBD FAST DASH content manifest.
+
+    Modern CNN videos stream from Warner Bros Discovery's FAST pipeline. yt-dlp's
+    CNN extractor returns "0 items" for these pages because the featured player
+    element carries an EMPTY data-media-id (only the related-clips rail has real
+    ids), so the extractor can't derive the media. The real stream is a tokenized
+    DASH manifest the Bolt player requests at runtime from
+    *.amer-free.prd.media.cnn.com/global/<uuid>/dash.mpd?manifest-params=<token> —
+    the uuid+token are injected by the player JS and are NOT in the static HTML.
+
+    We load the page headless (reusing the same stealthed Chromium that renders
+    other gated promo pages), let the Bolt player make that manifest request,
+    capture it, and decode `manifest-params` to the underlying `r.manifest`
+    content manifest (global/<uuid>/0_<id>.mpd). That content manifest is a clean
+    single-period VOD (no ads, no DRM) that yt-dlp's generic extractor downloads
+    via a browser Referer.
+
+    Returns the content manifest URL (preferred) or the tokenized dash.mpd URL as
+    a fallback, or '' if the player never resolved a manifest (e.g. the egress IP
+    is blocked — the manifest is IP/fingerprint-sensitive).
+    """
+    import time as _time
+    import base64
+    from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs, unquote as _unquote
+
+    from playwright.sync_api import sync_playwright
+
+    captured: dict = {}
+
+    def _on_request(req):
+        u = req.url
+        if 'amer-free' in u and 'dash.mpd' in u and 'manifest-params' in u and 'mpd' not in captured:
+            captured['mpd'] = u
+
+    proxy = _playwright_proxy(cnn_proxy_url())
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox',
+                      # Force the Bolt player to autoplay so it fetches the manifest
+                      # without needing a user gesture (headless has none).
+                      '--autoplay-policy=no-user-gesture-required'],
+                **({'proxy': proxy} if proxy else {}),
+            )
+            context = browser.new_context(
+                user_agent=HEADERS['User-Agent'],
+                viewport={'width': 1280, 'height': 800},
+            )
+            pw_cookies = _load_cookies_for_playwright(url)
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+            try:
+                from playwright_stealth import stealth_sync
+                stealth_sync(page)
+            except ImportError:
+                pass
+            page.on('request', _on_request)
+            try:
+                page.goto(url, wait_until='domcontentloaded', timeout=45000)
+            except Exception:
+                pass  # grab whatever loaded
+            # Nudge autoplay/playback so the Bolt player issues its playbackInfo
+            # call and fetches the manifest.
+            for sel in ('button[aria-label*="Play" i]', 'video', '.video-player',
+                        '[data-component-name="video-player"]'):
+                try:
+                    el = page.query_selector(sel)
+                    if el:
+                        el.click(timeout=1500)
+                except Exception:
+                    pass
+            deadline = _time.time() + 25
+            while 'mpd' not in captured and _time.time() < deadline:
+                try:
+                    page.wait_for_timeout(500)
+                except Exception:
+                    break
+            browser.close()
+    except Exception:
+        return ''
+
+    mpd = captured.get('mpd')
+    if not mpd:
+        return ''
+
+    # Decode manifest-params → r.manifest=global/<uuid>/0_<id>.mpd (clean content).
+    parsed = _urlparse(mpd)
+    mp = _parse_qs(parsed.query).get('manifest-params', [''])[0]
+    for seg in mp.split('|'):
+        try:
+            dec = base64.urlsafe_b64decode(seg + '=' * (-len(seg) % 4)).decode('utf-8', 'ignore')
+        except Exception:
+            continue
+        m = re.search(r'r\.manifest=(.+?\.mpd)', dec)
+        if m:
+            content_path = _unquote(m.group(1)).lstrip('/')
+            return f'{parsed.scheme}://{parsed.netloc}/{content_path}'
+
+    # Couldn't decode the clean manifest — fall back to the tokenized (ad-stitched)
+    # dash.mpd, which yt-dlp can still download.
+    return mpd
+
+
 def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
     """
     Scan page HTML (and source URL) for embedded video IDs.
@@ -354,6 +498,15 @@ def detect_platform(html: str, source_url: str = '') -> tuple[str, str, dict]:
     Raises ValueError for pages where the platform is detected but video ID requires
     browser rendering (e.g. Angular SPAs) — caller should surface a helpful message.
     """
+    # CNN (cnn.com / edition.cnn.com …) — modern WBD FAST videos stream via a
+    # tokenized DASH manifest that yt-dlp's CNN extractor can't resolve (empty
+    # data-media-id → "0 items"). Resolve the clean content manifest ourselves by
+    # driving the real Bolt player. Done here (before the HTML pattern scan) so the
+    # caller doesn't also run its own Playwright-render retry.
+    if is_cnn_url(source_url):
+        manifest = resolve_cnn_manifest(source_url)
+        return 'cnn', '', {'cnn_manifest_url': manifest}
+
     # Direct BrightCove player URL pasted as input — handle immediately
     bc_direct = re.match(
         r'https?://players\.brightcove\.net/(\d+)/([A-Za-z0-9_-]+)_default.*[?&]videoId=(\d+)',
@@ -429,6 +582,10 @@ def _build_yt_dlp_url(platform: str, video_id: str, source_url: str, extra: dict
             return (f'https://players.brightcove.net/{account}/{player_path}'
                     f'/index.html?videoId={video_id}')
         return source_url
+    elif platform == 'cnn':
+        # A resolved WBD FAST content manifest (.mpd) was cached on `extra` during
+        # detection. Hand it straight to yt-dlp's generic DASH handler.
+        return extra.get('cnn_manifest_url', '') or source_url
     elif platform == 'vidalytics':
         account_id = extra.get('vidalytics_account_id', '')
         # A resolved stream.m3u8 may already be cached on `extra` (set during
@@ -515,6 +672,11 @@ def probe_video_info(platform: str, video_id: str, source_url: str, extra: dict 
     Returns a dict (possibly empty) with keys like title / alt_title / display_id /
     thumbnail. Never raises — metadata is best-effort.
     """
+    # CNN's stream is a raw DASH manifest with no useful title/thumbnail metadata
+    # (its display_id is the opaque manifest id, e.g. "0_6722e5"). Skip the probe
+    # so the page's og:title/og:image win instead of polluting the job title.
+    if platform == 'cnn':
+        return {}
     yt_url = _build_yt_dlp_url(platform, video_id, source_url, extra)
     cmd = [
         'yt-dlp',
@@ -562,6 +724,20 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
     Download video using yt-dlp to dest_path (full .mp4 path).
     Returns the actual output path.
     """
+    extra = extra or {}
+
+    # CNN: the WBD FAST manifest must have been resolved during detection. If it
+    # wasn't, the player never handed us a stream — almost always because this
+    # egress IP is blocked (the manifest is IP/fingerprint-sensitive). Surface a
+    # clear, actionable message instead of a generic yt-dlp failure.
+    if platform == 'cnn' and not extra.get('cnn_manifest_url'):
+        raise RuntimeError(
+            'Could not resolve the CNN video stream. CNN serves modern videos via '
+            "an IP/fingerprint-sensitive DASH manifest that this server's network "
+            'appears to be blocked from (the player never returned a manifest). '
+            'This typically requires a residential proxy for the CNN fetch.'
+        )
+
     yt_url = _build_yt_dlp_url(platform, video_id, source_url, extra)
 
     cmd = [
@@ -576,6 +752,17 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
         '--output', '',  # filled below after tmp_dir is created
         '--no-warnings',
     ]
+
+    # CNN's WBD FAST CDN 503s to bot fingerprints / missing Referer; it serves the
+    # manifest + segments to a plain Chrome UA with a cnn.com Referer.
+    if platform == 'cnn':
+        cmd += [
+            '--referer', 'https://www.cnn.com/',
+            '--user-agent', HEADERS['User-Agent'],
+        ]
+        _proxy = cnn_proxy_url()
+        if _proxy:
+            cmd += ['--proxy', _proxy]
 
     cookies = _cookies_path(platform)
     if cookies:
@@ -617,6 +804,18 @@ def download_video(platform: str, video_id: str, source_url: str, dest_path: str
         # (e.g. .ts) is also left behind.
         files = list(Path(tmp_dir).glob('video.*'))
         if not files:
+            # yt-dlp exited 0 but wrote nothing. This happens when its extractor
+            # matches the page yet resolves zero playable media — e.g. a CNN page
+            # whose underlying CDN asset has been pulled from origin. yt-dlp prints
+            # "Downloading 0 items" / "Finished downloading playlist" and exits 0,
+            # so we detect that here rather than raise the opaque "no output" error.
+            out = result.stdout or ''
+            if 'Downloading 0 items' in out or '0 items' in out or 'Finished downloading playlist' in out:
+                raise RuntimeError(
+                    'yt-dlp recognized the page but found no downloadable video. '
+                    'The source media may have been removed from the origin/CDN or '
+                    'requires login. Try the direct video URL or another source.'
+                )
             raise RuntimeError('yt-dlp produced no output file')
 
         mp4s = [f for f in files if f.suffix.lower() == '.mp4']

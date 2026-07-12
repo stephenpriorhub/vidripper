@@ -31,6 +31,19 @@ SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Flask app ───────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=str(FRONTEND_DIR))
+# The bookmarklet posts hero-image data URLs captured in the user's browser
+# (the only place a Cloudflare-gated promo page renders), so allow a large body.
+app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
+
+
+@app.after_request
+def _add_cors_headers(resp):
+    # The bookmarklet runs on the promo page's origin and posts here cross-origin.
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, DELETE'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return resp
+
 
 _manifest_lock = threading.Lock()
 
@@ -378,6 +391,41 @@ def _headline_from_image(shot_path, api_key: str) -> dict:
     return {}
 
 
+def _headline_from_text(hero_text: str, api_key: str) -> dict:
+    """Structure raw hero text (captured from the promo page DOM) into the
+    headline block. Used when the headline is real DOM text rather than an
+    image. Returns the parsed dict (may be empty)."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model=HEADLINE_MODEL,
+        max_tokens=500,
+        messages=[{
+            'role': 'user',
+            'content': [{'type': 'text', 'text': (
+                'The following is the raw hero/top text scraped from a financial '
+                'promo landing page (order roughly matches on-page order):\n\n'
+                f'"""\n{hero_text}\n"""\n\n'
+                'Extract the promo headline block, verbatim, in these parts:\n'
+                '- "eyebrow": the small pre-headline line above the headline.\n'
+                '- "headline": the single largest / most prominent line.\n'
+                '- "subhead": the line directly under the headline.\n'
+                '- "subhead2": a secondary subhead or pull-quote.\n'
+                'Ignore nav links, buttons, disclaimers and boilerplate. If there '
+                'is no promo headline, return all empty strings.\n'
+                'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
+                'subhead2. Use "" for any part not present. No other text.'
+            )}],
+        }],
+    )
+    raw = ''.join(
+        b.text for b in msg.content if getattr(b, 'type', '') == 'text'
+    ).strip()
+    if '{' in raw and '}' in raw:
+        return json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
+    return {}
+
+
 def _extract_headline(job_id: str) -> None:
     """Read the promo headline block off the top-of-page screenshot via Claude
     vision and store it on the job. Best-effort — never raises, and no-ops when
@@ -406,14 +454,16 @@ def _extract_headline(job_id: str) -> None:
     # Use the first image that yields a real headline; the page clip returns
     # empty for a Cloudflare "verify you are human" interstitial, so we fall
     # through to the poster automatically.
+    # Priority: bookmarklet-captured page hero (the real headline on gated
+    # promos) -> page top-clip -> video poster -> full page. The hero is what
+    # the user actually sees; everything else is a fallback.
+    hero_imgs = sorted(SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png'))
     top = SCREENSHOTS_DIR / f'{job_id}_top.png'
     poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
     full = SCREENSHOTS_DIR / f'{job_id}.png'
-    if not poster.exists():
+    if not hero_imgs and not poster.exists():
         _ensure_poster(job_id)  # ffmpeg fallback if no native thumbnail was saved
-    candidates = [p for p in (top, poster, full) if p.exists()]
-    if not candidates:
-        return
+    candidates = [p for p in (*hero_imgs, top, poster, full) if p.exists()]
     last_err = None
     for shot in candidates:
         try:
@@ -431,7 +481,25 @@ def _extract_headline(job_id: str) -> None:
         if any(fields.values()):
             _update_job(job_id, fields)
             return
-    # No image produced a headline — record the last error if there was one.
+    # No image yielded a headline — try the captured hero TEXT (headline may be
+    # real DOM text rather than an image).
+    job = _get_job(job_id)
+    hero_text = (job.get('hero_text') if job else '') or ''
+    if hero_text.strip():
+        try:
+            data = _headline_from_text(hero_text, api_key)
+            fields = {
+                'eyebrow': (data.get('eyebrow') or '').strip(),
+                'headline': (data.get('headline') or '').strip(),
+                'subhead': (data.get('subhead') or '').strip(),
+                'subhead2': (data.get('subhead2') or '').strip(),
+            }
+            if any(fields.values()):
+                _update_job(job_id, fields)
+                return
+        except Exception as exc:
+            last_err = str(exc)[:200]
+    # Nothing produced a headline — record the last error if there was one.
     if last_err:
         _update_job(job_id, {'headline_error': last_err})
 
@@ -637,8 +705,10 @@ def ping():
     return jsonify({'status': 'ok', 'service': 'vidripper'})
 
 
-@app.route('/api/rip', methods=['POST'])
+@app.route('/api/rip', methods=['POST', 'OPTIONS'])
 def rip():
+    if request.method == 'OPTIONS':
+        return ('', 204)  # CORS preflight
     data = request.get_json(silent=True) or {}
     url = (data.get('url') or '').strip()
     if not url:
@@ -656,6 +726,30 @@ def rip():
 
     page_url = (data.get('page_url') or '').strip() or None
 
+    # ── Hero capture from the bookmarklet ────────────────────────────────────
+    # On Cloudflare-gated promos the headline lives in the page's hero (image
+    # and/or heading text), which only renders in the user's already-cleared
+    # browser. The bookmarklet grabs it there and posts it; we persist the hero
+    # image(s) for vision extraction and the text as a fallback.
+    hero_text = (data.get('hero_text') or '').strip()[:2000]
+    _heroes = data.get('hero_images') or []
+    if isinstance(data.get('hero_image'), str):
+        _heroes = [data['hero_image'], *(_heroes if isinstance(_heroes, list) else [])]
+    _saved = 0
+    if isinstance(_heroes, list):
+        import base64 as _b64
+        for du in _heroes[:3]:
+            if not isinstance(du, str) or ',' not in du or not du.startswith('data:'):
+                continue
+            try:
+                raw = _b64.b64decode(du.split(',', 1)[1])
+            except Exception:
+                continue
+            if not raw or len(raw) > 8 * 1024 * 1024:
+                continue
+            (SCREENSHOTS_DIR / f'{job_id}_hero{_saved}.png').write_bytes(raw)
+            _saved += 1
+
     job = {
         'id': job_id,
         'source_url': url,
@@ -671,6 +765,7 @@ def rip():
         'rev_transcript_url': '',
         'transcript_text': '',
         'has_screenshot': False,
+        'hero_text': hero_text,
         'eyebrow': '',
         'headline': '',
         'subhead': '',
@@ -800,8 +895,10 @@ def delete_job(job_id):
         except OSError:
             pass
 
-    # Remove screenshots (full page + top clip + poster) if present
-    for _shot in (f'{job_id}.png', f'{job_id}_top.png', f'{job_id}_poster.png'):
+    # Remove screenshots (full page + top clip + poster + captured heroes)
+    _shots = [f'{job_id}.png', f'{job_id}_top.png', f'{job_id}_poster.png']
+    _shots += [p.name for p in SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png')]
+    for _shot in _shots:
         _sp = SCREENSHOTS_DIR / _shot
         if _sp.exists():
             try:

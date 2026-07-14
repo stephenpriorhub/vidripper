@@ -251,6 +251,39 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
                 page.wait_for_timeout(1500)
             except Exception:
                 pass
+            # Strip popups/modals/consent gates so the screenshot shows the real
+            # promo hero underneath, not an "I AGREE" overlay. Remove full-screen
+            # fixed backdrops, high-z fixed layers, and anything class/role-tagged
+            # as a modal, then restore scrolling that modals usually lock.
+            try:
+                page.evaluate("""() => {
+                    const RX = /(modal|popup|pop-up|overlay|lightbox|backdrop|consent|cookie|gdpr|interstitial|dialog|gate)/i;
+                    const kill = [];
+                    document.querySelectorAll('body *').forEach((el) => {
+                        const s = getComputedStyle(el);
+                        if (s.display === 'none' || s.visibility === 'hidden') return;
+                        const pos = s.position;
+                        const r = el.getBoundingClientRect();
+                        const z = parseInt(s.zIndex) || 0;
+                        const big = r.width >= window.innerWidth * 0.55
+                                 && r.height >= window.innerHeight * 0.45;
+                        const tag = ((el.className || '') + ' ' + (el.id || '')).toString();
+                        const modalish = RX.test(tag)
+                            || el.getAttribute('role') === 'dialog'
+                            || el.getAttribute('aria-modal') === 'true';
+                        if (((pos === 'fixed' || pos === 'sticky') && (big || z >= 1000)) ||
+                            (modalish && (pos === 'fixed' || pos === 'absolute' || z >= 100))) {
+                            kill.push(el);
+                        }
+                    });
+                    kill.forEach((el) => { try { el.remove(); } catch (e) {} });
+                    for (const t of [document.documentElement, document.body]) {
+                        if (t) { t.style.overflow = 'auto'; t.style.position = 'static'; }
+                    }
+                }""")
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
             dest = str(SCREENSHOTS_DIR / f'{job_id}.png')
             page.screenshot(path=dest, full_page=True)
             # Also capture a top-of-page clip for the analyzer. The vision API
@@ -377,6 +410,10 @@ def _headline_from_image(shot_path, api_key: str) -> dict:
                     'that; otherwise read the headline block from the video thumbnail '
                     'shown in the image. If the image is a bot/security check or has '
                     'no promo headline at all, return all empty strings.\n'
+                    'IGNORE any popup, modal, consent dialog, cookie banner or age/'
+                    'access gate overlaying the page (e.g. an "I AGREE" box or a '
+                    '"MEETING REQUEST" prompt). Never take the headline from such an '
+                    'overlay — read the actual promo hero behind it.\n'
                     'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
                     'subhead2. Use "" for any part that is not present. No other text.'
                 )},
@@ -411,8 +448,9 @@ def _headline_from_text(hero_text: str, api_key: str) -> dict:
                 '- "headline": the single largest / most prominent line.\n'
                 '- "subhead": the line directly under the headline.\n'
                 '- "subhead2": a secondary subhead or pull-quote.\n'
-                'Ignore nav links, buttons, disclaimers and boilerplate. If there '
-                'is no promo headline, return all empty strings.\n'
+                'Ignore nav links, buttons, disclaimers and boilerplate, and ignore '
+                'any popup/modal/consent text (e.g. "I AGREE", "MEETING REQUEST"). '
+                'If there is no promo headline, return all empty strings.\n'
                 'Return ONLY compact JSON with keys eyebrow, headline, subhead, '
                 'subhead2. Use "" for any part not present. No other text.'
             )}],

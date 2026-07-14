@@ -496,6 +496,22 @@ def _extract_headline(job_id: str) -> None:
     # Priority: bookmarklet-captured page hero (the real headline on gated
     # promos) -> page top-clip -> video poster -> full page. The hero is what
     # the user actually sees; everything else is a fallback.
+    # Fetch any bookmarklet-supplied hero image URLs server-side (cross-origin
+    # heroes the browser canvas couldn't inline). These live on CDNs reachable
+    # from the server even when the promo HTML page is Cloudflare-gated.
+    _job = _get_job(job_id)
+    _urls = (_job.get('hero_image_urls') if _job else None) or []
+    if _urls:
+        _idx = len(sorted(SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png')))
+        for _u in _urls[:6]:
+            if _idx >= 4:
+                break
+            _dest = SCREENSHOTS_DIR / f'{job_id}_hero{_idx}.png'
+            try:
+                if ripper.download_image(_u, str(_dest)):
+                    _idx += 1
+            except Exception:
+                pass
     hero_imgs = sorted(SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png'))
     top = SCREENSHOTS_DIR / f'{job_id}_top.png'
     poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
@@ -788,6 +804,14 @@ def rip():
                 continue
             (SCREENSHOTS_DIR / f'{job_id}_hero{_saved}.png').write_bytes(raw)
             _saved += 1
+    # Candidate hero image URLs (largest-first). Cross-origin hero images taint
+    # the browser canvas so the bookmarklet can't inline them; instead it sends
+    # the URLs and we fetch them server-side from the CDN (which, unlike the
+    # gated HTML page, is reachable) during headline extraction.
+    hero_image_urls = [
+        u for u in (data.get('hero_image_urls') or [])
+        if isinstance(u, str) and u.startswith('http')
+    ][:6]
 
     job = {
         'id': job_id,
@@ -805,6 +829,7 @@ def rip():
         'transcript_text': '',
         'has_screenshot': False,
         'hero_text': hero_text,
+        'hero_image_urls': hero_image_urls,
         'eyebrow': '',
         'headline': '',
         'subhead': '',

@@ -772,9 +772,18 @@ def rip():
         return jsonify({'error': 'url must start with http:// or https://'}), 400
 
     # ── Duplicate check ──────────────────────────────────────────────────────
-    existing = _find_duplicate(url)
-    if existing:
-        return jsonify({'duplicate': True, 'existing_job': existing}), 200
+    # Skip it when the caller supplies freshly-captured hero data (a bookmarklet
+    # re-run): the whole point of re-running is to re-capture the hero/headline,
+    # so returning the stale job would defeat it. Manual pastes (no hero data)
+    # still dedupe.
+    _has_hero = bool(
+        data.get('hero_image_urls') or data.get('hero_images')
+        or data.get('hero_image') or (data.get('hero_text') or '').strip()
+    )
+    if not _has_hero:
+        existing = _find_duplicate(url)
+        if existing:
+            return jsonify({'duplicate': True, 'existing_job': existing}), 200
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()

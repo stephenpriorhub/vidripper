@@ -191,12 +191,14 @@ def download_image(url: str, dest_path: str) -> bool:
 def extract_poster_frame(video_path: str, dest_path: str) -> bool:
     """Grab a still frame from a downloaded video via ffmpeg as a poster image.
 
-    Fallback for when a platform-native thumbnail URL isn't available: VSLs
-    almost always open on a branded headline card, so an early frame usually
-    carries the headline. Seeks ~1s in to skip any fade-in; falls back to the
-    very first frame. Best-effort — returns True only if a non-empty PNG lands.
+    VSLs almost always OPEN on their branded headline card (e.g. Porter's
+    "TRUMP'S NEW DOLLAR"), so an early frame carries the real headline — whereas
+    a platform's auto-generated thumbnail is often a mid-video frame that misses
+    it. Tries ~1s in first (past any fade-in, still on the title card), then a
+    couple of nearby seeks. Best-effort — returns True only if a non-empty PNG
+    lands.
     """
-    for seek in ('1', '0'):
+    for seek in ('1', '2', '0.5', '0'):
         try:
             subprocess.run(
                 ['ffmpeg', '-y', '-ss', seek, '-i', video_path,

@@ -357,34 +357,37 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
                 page.wait_for_timeout(1500)
             except Exception:
                 pass
-            # Strip popups/modals/consent gates so the screenshot shows the real
-            # promo hero underneath, not an "I AGREE" overlay. Remove full-screen
-            # fixed backdrops, high-z fixed layers, and anything class/role-tagged
-            # as a modal, then restore scrolling that modals usually lock.
+            # Strip ONLY genuine popups/modals/consent gates so the screenshot
+            # shows the real hero — never remove content merely for being fixed
+            # or large (a promo hero is often a fixed, full-viewport container,
+            # e.g. Porter/Brownstone's `div.above-fold`; removing it blanks the
+            # page). Two high-confidence signals: (a) class/id/role tagged as a
+            # modal/popup/consent/exit-intent widget, or (b) a very-high-z
+            # (>=1000) fixed full-screen layer (a true modal backdrop). Low
+            # z-index fixed heroes are left intact.
             try:
                 page.evaluate("""() => {
-                    const RX = /(modal|popup|pop-up|overlay|lightbox|backdrop|consent|cookie|gdpr|interstitial|dialog|gate)/i;
+                    const RX = /(modal|popup|pop-up|overlay|lightbox|backdrop|consent|cookie|gdpr|interstitial|dialog|exit-intent|exitintent|ouibounce|optin|opt-in|klaviyo|privy|leadbox|fancybox)/i;
                     const kill = [];
                     document.querySelectorAll('body *').forEach((el) => {
                         const s = getComputedStyle(el);
                         if (s.display === 'none' || s.visibility === 'hidden') return;
                         const pos = s.position;
-                        const r = el.getBoundingClientRect();
+                        if (pos !== 'fixed' && pos !== 'absolute') return;
                         const z = parseInt(s.zIndex) || 0;
-                        const big = r.width >= window.innerWidth * 0.55
-                                 && r.height >= window.innerHeight * 0.45;
+                        const r = el.getBoundingClientRect();
                         const tag = ((el.className || '') + ' ' + (el.id || '')).toString();
-                        const modalish = RX.test(tag)
+                        const tagged = RX.test(tag)
                             || el.getAttribute('role') === 'dialog'
                             || el.getAttribute('aria-modal') === 'true';
-                        if (((pos === 'fixed' || pos === 'sticky') && (big || z >= 1000)) ||
-                            (modalish && (pos === 'fixed' || pos === 'absolute' || z >= 100))) {
-                            kill.push(el);
-                        }
+                        const bigBackdrop = pos === 'fixed' && z >= 1000
+                            && r.width >= window.innerWidth * 0.6
+                            && r.height >= window.innerHeight * 0.5;
+                        if ((tagged && z >= 1) || bigBackdrop) kill.push(el);
                     });
                     kill.forEach((el) => { try { el.remove(); } catch (e) {} });
                     for (const t of [document.documentElement, document.body]) {
-                        if (t) { t.style.overflow = 'auto'; t.style.position = 'static'; }
+                        if (t) t.style.overflow = 'auto';  // unlock modal scroll-lock
                     }
                 }""")
                 page.wait_for_timeout(300)
@@ -444,16 +447,25 @@ def _ensure_poster(job_id: str, platform: str = '', account_id: str = '',
                    embed_id: str = '') -> bool:
     """Make sure a poster image exists at SCREENSHOTS_DIR/{job_id}_poster.png.
 
-    The promo headline is frequently baked into the video's pre-play thumbnail
-    rather than the page text — and the page itself is often Cloudflare-gated so
-    it can't be screenshotted. The poster lives on the video CDN, so we can get
-    it: prefer the platform-native thumbnail (Vidalytics loader config), and
-    fall back to an ffmpeg still from the downloaded MP4. Best-effort.
+    On gated promos the headline is baked into the video, and the promo page
+    can't be screenshotted server-side. The headline is almost always the
+    video's OPENING frame (its title card, e.g. Porter's "TRUMP'S NEW DOLLAR").
+    So prefer an ffmpeg still from the start of the downloaded MP4 — the
+    platform-native thumbnail (Vidalytics loader config) is a MID-video frame
+    that misses the headline, so it's only a fallback when we have no video.
     """
     poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
     if poster.exists():
         return True
-    # 1) Vidalytics native poster/thumbnail (where the headline usually lives).
+    # 1) Preferred: the video's opening frame (the headline title card).
+    mp4 = VIDEOS_DIR / f'{job_id}.mp4'
+    if mp4.exists():
+        try:
+            if ripper.extract_poster_frame(str(mp4), str(poster)):
+                return True
+        except Exception:
+            pass
+    # 2) Fallback (no local video): Vidalytics native thumbnail from the loader.
     if platform == 'vidalytics' and account_id and embed_id:
         try:
             url = ripper.resolve_vidalytics_poster(account_id, embed_id)
@@ -461,13 +473,6 @@ def _ensure_poster(job_id: str, platform: str = '', account_id: str = '',
                 return True
         except Exception:
             pass
-    # 2) Fallback: grab an early frame from the downloaded video.
-    mp4 = VIDEOS_DIR / f'{job_id}.mp4'
-    if mp4.exists():
-        try:
-            return ripper.extract_poster_frame(str(mp4), str(poster))
-        except Exception:
-            return False
     return False
 
 

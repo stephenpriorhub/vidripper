@@ -760,6 +760,35 @@ def ping():
     return jsonify({'status': 'ok', 'service': 'vidripper'})
 
 
+@app.route('/api/diag')
+def diag():
+    """Read-only diagnostics to detect data-durability problems: which instance
+    served this request, whether DATA_DIR is a real persistent mount, and the
+    manifest size. Hit repeatedly — if hostname/deployment vary or the manifest
+    count jumps, storage is per-instance (not a shared volume) and jobs/
+    screenshots will randomly go missing."""
+    import socket
+    try:
+        _count = len(_load_manifest())
+    except Exception:
+        _count = -1
+    return jsonify({
+        'hostname': socket.gethostname(),
+        'data_dir': str(DATA_DIR),
+        'data_dir_is_volume': str(DATA_DIR) == '/data',
+        'data_is_mount': os.path.ismount('/data') if os.path.isdir('/data') else False,
+        'manifest_count': _count,
+        'screenshot_files': len(list(SCREENSHOTS_DIR.glob('*.png'))),
+        'railway': {
+            k: os.environ.get(k) for k in (
+                'RAILWAY_REPLICA_ID', 'RAILWAY_DEPLOYMENT_ID',
+                'RAILWAY_SERVICE_NAME', 'RAILWAY_PROJECT_NAME',
+                'RAILWAY_REPLICA_REGION',
+            )
+        },
+    })
+
+
 @app.route('/api/rip', methods=['POST', 'OPTIONS'])
 def rip():
     if request.method == 'OPTIONS':

@@ -50,19 +50,45 @@ _manifest_lock = threading.Lock()
 
 # ── manifest helpers ────────────────────────────────────────────────────────
 
+_MANIFEST_BAK = MANIFEST_PATH.with_name('manifest.json.bak')
+_MANIFEST_TMP = MANIFEST_PATH.with_name('manifest.json.tmp')
+
+
 def _load_manifest() -> list:
     if not MANIFEST_PATH.exists():
         return []
-    with open(MANIFEST_PATH) as f:
-        try:
+    try:
+        with open(MANIFEST_PATH) as f:
             return json.load(f)
-        except json.JSONDecodeError:
-            return []
+    except (json.JSONDecodeError, OSError):
+        # The live file is corrupt/partial (e.g. a restart interrupted a write).
+        # Recover from the last-good backup. Crucially, do NOT fall back to an
+        # empty list — a writer would then persist [] and destroy every job.
+        if _MANIFEST_BAK.exists():
+            try:
+                with open(_MANIFEST_BAK) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        raise RuntimeError('manifest.json is unreadable and no valid backup exists')
 
 
 def _save_manifest(jobs: list) -> None:
-    with open(MANIFEST_PATH, 'w') as f:
+    # Atomic write: dump to a temp file in the same dir, fsync, back up the
+    # current good file, then os.replace() (atomic on the same filesystem).
+    # This guarantees the live manifest is never left truncated by a crash or
+    # restart mid-write — the failure mode that was silently emptying it.
+    with open(_MANIFEST_TMP, 'w') as f:
         json.dump(jobs, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    if MANIFEST_PATH.exists():
+        try:
+            import shutil
+            shutil.copy2(MANIFEST_PATH, _MANIFEST_BAK)
+        except OSError:
+            pass
+    os.replace(_MANIFEST_TMP, MANIFEST_PATH)
 
 
 def _get_job(job_id: str) -> dict | None:
@@ -775,8 +801,9 @@ def diag():
     return jsonify({
         'hostname': socket.gethostname(),
         'data_dir': str(DATA_DIR),
-        'data_dir_is_volume': str(DATA_DIR) == '/data',
-        'data_is_mount': os.path.ismount('/data') if os.path.isdir('/data') else False,
+        # Check the ACTUAL DATA_DIR (the volume is mounted at /app/data, not
+        # /data), so this reflects real persistence instead of a false negative.
+        'data_is_mount': os.path.ismount(str(DATA_DIR)),
         'manifest_count': _count,
         'screenshot_files': len(list(SCREENSHOTS_DIR.glob('*.png'))),
         'railway': {

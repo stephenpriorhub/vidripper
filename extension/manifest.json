@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "VidRipper",
+  "version": "1.0.0",
+  "description": "Rip an embedded promo video to VidRipper and capture the page headline — works on Cloudflare-gated pages because it runs in your browser.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": ["https://vidripper.oxfordhub.app/*"],
+  "action": { "default_title": "Rip this video to VidRipper" },
+  "background": { "service_worker": "background.js" }
+}

@@ -308,6 +308,11 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
     proxy — a trusted IP that renders the real page — when one is configured
     (CNN_PROXY / RESIDENTIAL_PROXY_URL). Loads any uploaded cookies too.
     """
+    # If the browser extension already uploaded a real in-browser screenshot,
+    # keep it — a server render would only get the Cloudflare/bot page.
+    _job = _get_job(job_id)
+    if _job and _job.get('client_screenshot'):
+        return
     proxy = ripper._playwright_proxy(ripper.cnn_proxy_url())
     try:
         blocked = _capture_page(job_id, target_url, None)
@@ -902,6 +907,33 @@ def index():
     return send_from_directory(str(FRONTEND_DIR), 'index.html')
 
 
+@app.route('/extension')
+def extension_page():
+    """Install instructions for the VidRipper Chrome extension."""
+    return send_from_directory(str(FRONTEND_DIR), 'extension.html')
+
+
+@app.route('/extension.zip')
+def extension_zip():
+    """Download the extension as a zip (unzip → chrome://extensions → Load unpacked)."""
+    import io as _io
+    import zipfile
+    ext_dir = BASE_DIR / 'extension'
+    if not ext_dir.is_dir():
+        return jsonify({'error': 'extension not found'}), 404
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(ext_dir.rglob('*')):
+            if f.is_file():
+                z.write(f, Path('vidripper-extension') / f.relative_to(ext_dir))
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype='application/zip',
+        headers={'Content-Disposition': 'attachment; filename="vidripper-extension.zip"'},
+    )
+
+
 @app.route('/favicon.ico')
 def favicon():
     return send_from_directory(str(FRONTEND_DIR), 'favicon.ico', mimetype='image/x-icon')
@@ -1010,6 +1042,23 @@ def rip():
         if isinstance(u, str) and u.startswith('http')
     ][:6]
 
+    # Full page screenshot captured in the user's browser by the extension. It
+    # renders the REAL page (past Cloudflare, which blocks our datacenter server),
+    # so save it as both the page screenshot and the headline source, and the
+    # pipeline skips its own (blockable) server-side screenshot.
+    client_screenshot = False
+    _shot = data.get('screenshot')
+    if isinstance(_shot, str) and _shot.startswith('data:') and ',' in _shot:
+        try:
+            import base64 as _b64s
+            raw = _b64s.b64decode(_shot.split(',', 1)[1])
+            if raw and len(raw) <= 12 * 1024 * 1024:
+                (SCREENSHOTS_DIR / f'{job_id}.png').write_bytes(raw)
+                (SCREENSHOTS_DIR / f'{job_id}_top.png').write_bytes(raw)
+                client_screenshot = True
+        except Exception:
+            pass
+
     job = {
         'id': job_id,
         'source_url': url,
@@ -1024,7 +1073,8 @@ def rip():
         'rev_submitted_at': '',
         'rev_transcript_url': '',
         'transcript_text': '',
-        'has_screenshot': False,
+        'has_screenshot': client_screenshot,
+        'client_screenshot': client_screenshot,
         'hero_text': hero_text,
         'hero_image_urls': hero_image_urls,
         'eyebrow': '',

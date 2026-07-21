@@ -301,38 +301,76 @@ def _apply_video_metadata(job_id: str, source_url: str, platform: str, video_id:
 def _take_screenshot(job_id: str, target_url: str) -> None:
     """Full-page screenshot of target_url; save to SCREENSHOTS_DIR/{job_id}.png.
 
-    Captures the ENTIRE scrollable page (not just the viewport) so the promo
-    headline, subheadline and full sales copy are preserved for the analyzer.
-    Auto-scrolls first to force lazy-loaded images/sections to render, and
-    loads any uploaded cookies so gated promo pages render authenticated.
+    Captures the ENTIRE scrollable page (scroll + stitch, like GoFullPage) so
+    the promo headline and full sales copy are preserved. Renders direct first;
+    if the page comes back as a Cloudflare bot-challenge or a blank/broken render
+    (datacenter IPs get challenged, e.g. Porter), retries through the residential
+    proxy — a trusted IP that renders the real page — when one is configured
+    (CNN_PROXY / RESIDENTIAL_PROXY_URL). Loads any uploaded cookies too.
     """
+    proxy = ripper._playwright_proxy(ripper.cnn_proxy_url())
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox'],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/120.0.0.0 Safari/537.36'
-                ),
-                viewport={'width': 1280, 'height': 800},
-            )
-            pw_cookies = ripper._load_cookies_for_playwright(target_url)
-            if pw_cookies:
-                context.add_cookies(pw_cookies)
-            page = context.new_page()
-            try:
-                from playwright_stealth import stealth_sync
-                stealth_sync(page)
-            except ImportError:
-                pass
+        blocked = _capture_page(job_id, target_url, None)
+        if blocked and proxy:
+            _capture_page(job_id, target_url, proxy)
+        _update_job(job_id, {'has_screenshot': True})
+    except Exception as exc:
+        # Non-fatal — screenshot failure should not block transcription
+        _update_job(job_id, {'screenshot_error': str(exc)[:200]})
+
+
+def _capture_page(job_id: str, target_url: str, proxy) -> bool:
+    """Render target_url (optionally via a proxy) and save the full-page +
+    top-clip screenshots. Returns True if the render looks like a Cloudflare
+    challenge or a blank/broken page (so the caller can retry through a proxy)."""
+    blocked = False
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            proxy=proxy,
+            args=['--no-sandbox', '--disable-setuid-sandbox'],
+        )
+        context = browser.new_context(
+            user_agent=(
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+            viewport={'width': 1280, 'height': 800},
+        )
+        pw_cookies = ripper._load_cookies_for_playwright(target_url)
+        if pw_cookies:
+            context.add_cookies(pw_cookies)
+        page = context.new_page()
+        try:
+            from playwright_stealth import stealth_sync
+            stealth_sync(page)
+        except ImportError:
+            pass
+        if True:
             try:
                 page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
                 page.wait_for_load_state('networkidle', timeout=8000)
+            except Exception:
+                pass
+            # Detect a Cloudflare bot-challenge or a blank/broken render so the
+            # caller can retry via a trusted (residential-proxy) IP.
+            try:
+                sig = page.evaluate("""() => {
+                    const t = (document.body ? document.body.innerText : '').trim().length;
+                    let media = 0;
+                    document.querySelectorAll('video,iframe,img').forEach((e) => {
+                        const r = e.getBoundingClientRect();
+                        if (r.width > 200 && r.height > 150) media++;
+                    });
+                    const html = document.documentElement.innerHTML.slice(0, 4000).toLowerCase();
+                    const cf = /just a moment|verify you are human|cf-chl|challenge-platform|cdn-cgi\\/challenge|checking your browser/.test(html);
+                    return { t, media, cf };
+                }""")
+                blocked = bool(sig.get('cf')) or (
+                    int(sig.get('t') or 0) < 60 and int(sig.get('media') or 0) == 0
+                )
             except Exception:
                 pass
             # Long sales pages defer most images/sections until scrolled into
@@ -433,10 +471,7 @@ def _take_screenshot(job_id: str, target_url: str) -> None:
             except Exception:
                 pass  # top clip is best-effort; full-page PNG is still saved
             browser.close()
-        _update_job(job_id, {'has_screenshot': True})
-    except Exception as exc:
-        # Non-fatal — screenshot failure should not block transcription
-        _update_job(job_id, {'screenshot_error': str(exc)[:200]})
+    return blocked
 
 
 # Cheap, fast vision model for headline/subheadline extraction.
@@ -902,6 +937,7 @@ def diag():
         'data_is_mount': os.path.ismount(str(DATA_DIR)),
         'manifest_count': _count,
         'screenshot_files': len(list(SCREENSHOTS_DIR.glob('*.png'))),
+        'residential_proxy_configured': bool(ripper.cnn_proxy_url()),
         'railway': {
             k: os.environ.get(k) for k in (
                 'RAILWAY_REPLICA_ID', 'RAILWAY_DEPLOYMENT_ID',

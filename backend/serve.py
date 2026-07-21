@@ -47,7 +47,10 @@ def _ensure_chromium() -> None:
 
 _ensure_chromium()
 
-from app import app
+from app import app, start_archiver
+
+# Kick off the daily Google Drive archival sweep (no-ops until Drive is configured).
+start_archiver()
 
 port = int(os.environ.get('PORT', 8080))
 print(f'[serve] Starting waitress on 0.0.0.0:{port}', flush=True)

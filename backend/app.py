@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory, abort, Response
 
 import ripper
 import rev_client
+import gdrive
 
 # ── paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -133,6 +134,85 @@ def _find_duplicate(source_url: str) -> dict | None:
                 and job.get('transcript_text')):
             return job
     return None
+
+
+# ── Google Drive archival ────────────────────────────────────────────────────
+# After ARCHIVE_AFTER_DAYS, upload each local video to the Shared Drive, record
+# the Drive id/url on the job, and delete the local .mp4 to reclaim volume space.
+# Playback keeps working because /video streams from Drive when local is gone.
+ARCHIVE_AFTER_DAYS = 30
+
+
+def _archive_old_videos(days: int | None = None) -> dict:
+    """Sweep: archive local videos older than the retention window to Drive.
+    Best-effort per job — a failure records archive_error and keeps the local
+    file for the next sweep. No-ops (safely) until Drive is configured."""
+    if not gdrive.is_configured():
+        return {'skipped': 'google drive not configured'}
+    cutoff_days = ARCHIVE_AFTER_DAYS if days is None else days
+    now = datetime.now(timezone.utc)
+    archived = errors = 0
+    for job in _load_manifest():
+        jid = job.get('id')
+        if not jid or job.get('drive_file_id'):
+            continue  # already archived
+        vp = VIDEOS_DIR / f'{jid}.mp4'
+        if not vp.exists():
+            continue
+        ts = job.get('created_at') or job.get('rev_submitted_at') or ''
+        try:
+            created = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if (now - created).total_seconds() < cutoff_days * 86400:
+            continue
+        safe = ''.join(
+            c for c in (job.get('title') or jid)[:60]
+            if c.isalnum() or c in ' -_'
+        ).strip() or jid
+        try:
+            up = gdrive.upload_video(str(vp), f'{safe} [{jid}].mp4')
+        except Exception as exc:
+            _update_job(jid, {'archive_error': str(exc)[:200]})
+            errors += 1
+            continue
+        _update_job(jid, {
+            'drive_file_id': up['file_id'],
+            'drive_url': up.get('web_view_link', ''),
+            'archived_at': now.isoformat(),
+            'local_video': '',
+            'archive_error': '',
+        })
+        try:
+            vp.unlink()
+        except OSError:
+            pass
+        archived += 1
+    return {'archived': archived, 'errors': errors, 'cutoff_days': cutoff_days}
+
+
+_archiver_started = False
+
+
+def start_archiver() -> None:
+    """Start the daily archival sweep in a daemon thread (idempotent)."""
+    global _archiver_started
+    if _archiver_started:
+        return
+    _archiver_started = True
+
+    def _loop():
+        import time
+        time.sleep(120)  # let the app settle after boot
+        while True:
+            try:
+                result = _archive_old_videos()
+                print(f'[archiver] sweep: {result}', flush=True)
+            except Exception as exc:
+                print(f'[archiver] sweep error: {exc}', flush=True)
+            time.sleep(24 * 3600)
+
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 # ── docx generation ─────────────────────────────────────────────────────────
@@ -901,6 +981,10 @@ def rip():
         'subhead2': '',
         'analyze_status': '',
         'analyze_error': '',
+        'drive_file_id': '',
+        'drive_url': '',
+        'archived_at': '',
+        'archive_error': '',
         'pipeline_step': 'queued',
         'error': '',
         'created_at': now,
@@ -1004,10 +1088,39 @@ def get_screenshot(job_id):
 
 @app.route('/api/jobs/<job_id>/video')
 def serve_video(job_id):
+    # Local file present → serve it directly (fast path, supports Range natively).
     video_path = VIDEOS_DIR / f'{job_id}.mp4'
-    if not video_path.exists():
-        return jsonify({'error': 'Job not found', 'id': job_id}), 404
-    return send_from_directory(str(VIDEOS_DIR), f'{job_id}.mp4', mimetype='video/mp4')
+    if video_path.exists():
+        return send_from_directory(str(VIDEOS_DIR), f'{job_id}.mp4', mimetype='video/mp4')
+    # Archived → stream from Google Drive, forwarding Range so the player seeks.
+    job = _get_job(job_id)
+    if job and job.get('drive_file_id') and gdrive.is_configured():
+        try:
+            up = gdrive.open_stream(job['drive_file_id'], request.headers.get('Range'))
+        except Exception as exc:
+            return jsonify({'error': f'drive stream failed: {exc}'}), 502
+        if up.status_code >= 400:
+            up.close()
+            return jsonify({'error': 'archived video unavailable',
+                            'drive_status': up.status_code}), 502
+        passthrough = ('content-length', 'content-range', 'content-type', 'accept-ranges')
+        headers = {k: v for k, v in up.headers.items() if k.lower() in passthrough}
+        headers.setdefault('Accept-Ranges', 'bytes')
+        return Response(
+            up.iter_content(chunk_size=262144),
+            status=up.status_code,
+            headers=headers,
+            mimetype='video/mp4',
+        )
+    return jsonify({'error': 'Job not found', 'id': job_id}), 404
+
+
+@app.route('/api/admin/archive', methods=['POST'])
+def admin_archive():
+    """Manually trigger the archival sweep. Optional ?days=N overrides the
+    30-day threshold (use ?days=0 to archive everything now, for testing)."""
+    days = request.args.get('days', type=int)
+    return jsonify(_archive_old_videos(days=days))
 
 
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])
@@ -1022,6 +1135,13 @@ def delete_job(job_id):
         try:
             video_path.unlink()
         except OSError:
+            pass
+
+    # Remove the archived Drive copy too, if this job was offloaded.
+    if job.get('drive_file_id') and gdrive.is_configured():
+        try:
+            gdrive.delete_file(job['drive_file_id'])
+        except Exception:
             pass
 
     # Remove screenshots (full page + top clip + poster + captured heroes)

@@ -8,3 +8,5 @@ playwright
 playwright-stealth
 python-docx
 anthropic
+google-api-python-client
+google-auth

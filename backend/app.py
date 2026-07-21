@@ -454,22 +454,29 @@ def _ensure_poster(job_id: str, platform: str = '', account_id: str = '',
     platform-native thumbnail (Vidalytics loader config) is a MID-video frame
     that misses the headline, so it's only a fallback when we have no video.
     """
-    poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
-    if poster.exists():
+    if list(SCREENSHOTS_DIR.glob(f'{job_id}_poster*.png')):
         return True
-    # 1) Preferred: the video's opening frame (the headline title card).
+    # 1) Preferred: still frames from the START of the video. Grab several
+    # early timestamps because a VSL's title card (the headline) can be brief
+    # and t=0 may be a black fade-in; extraction leaves them for the vision
+    # loop to try earliest-first.
     mp4 = VIDEOS_DIR / f'{job_id}.mp4'
+    made = False
     if mp4.exists():
-        try:
-            if ripper.extract_poster_frame(str(mp4), str(poster)):
-                return True
-        except Exception:
-            pass
+        for i, seek in enumerate((0, 0.5, 1.5, 3)):
+            dest = SCREENSHOTS_DIR / f'{job_id}_poster{i}.png'
+            try:
+                if ripper.extract_poster_frame(str(mp4), str(dest), seek):
+                    made = True
+            except Exception:
+                pass
+        if made:
+            return True
     # 2) Fallback (no local video): Vidalytics native thumbnail from the loader.
     if platform == 'vidalytics' and account_id and embed_id:
         try:
             url = ripper.resolve_vidalytics_poster(account_id, embed_id)
-            if url and ripper.download_image(url, str(poster)):
+            if url and ripper.download_image(url, str(SCREENSHOTS_DIR / f'{job_id}_poster0.png')):
                 return True
         except Exception:
             pass
@@ -625,11 +632,15 @@ def _extract_headline(job_id: str) -> None:
                 pass
     hero_imgs = sorted(SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png'))
     top = SCREENSHOTS_DIR / f'{job_id}_top.png'
-    poster = SCREENSHOTS_DIR / f'{job_id}_poster.png'
     full = SCREENSHOTS_DIR / f'{job_id}.png'
-    if not hero_imgs and not poster.exists():
-        _ensure_poster(job_id)  # ffmpeg fallback if no native thumbnail was saved
-    candidates = [p for p in (*hero_imgs, top, poster, full) if p.exists()]
+    poster_imgs = sorted(SCREENSHOTS_DIR.glob(f'{job_id}_poster*.png'))
+    if not hero_imgs and not poster_imgs:
+        _ensure_poster(job_id)
+        poster_imgs = sorted(SCREENSHOTS_DIR.glob(f'{job_id}_poster*.png'))
+    # Order: real page hero (bookmarklet) → page top-clip → video frames
+    # (earliest first, so a title card like "TRUMP'S NEW DOLLAR" at t=0 wins over
+    # a later scene) → full page.
+    candidates = [p for p in (*hero_imgs, top, *poster_imgs, full) if p.exists()]
     last_err = None
     for shot in candidates:
         try:
@@ -1150,7 +1161,8 @@ def delete_job(job_id):
             pass
 
     # Remove screenshots (full page + top clip + poster + captured heroes)
-    _shots = [f'{job_id}.png', f'{job_id}_top.png', f'{job_id}_poster.png']
+    _shots = [f'{job_id}.png', f'{job_id}_top.png']
+    _shots += [p.name for p in SCREENSHOTS_DIR.glob(f'{job_id}_poster*.png')]
     _shots += [p.name for p in SCREENSHOTS_DIR.glob(f'{job_id}_hero*.png')]
     for _shot in _shots:
         _sp = SCREENSHOTS_DIR / _shot

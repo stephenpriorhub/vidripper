@@ -188,7 +188,7 @@ def download_image(url: str, dest_path: str) -> bool:
         return False
 
 
-def extract_poster_frame(video_path: str, dest_path: str) -> bool:
+def extract_poster_frame(video_path: str, dest_path: str, seek=1) -> bool:
     """Grab a still frame from a downloaded video via ffmpeg as a poster image.
 
     VSLs almost always OPEN on their branded headline card (e.g. Porter's
@@ -198,21 +198,18 @@ def extract_poster_frame(video_path: str, dest_path: str) -> bool:
     couple of nearby seeks. Best-effort — returns True only if a non-empty PNG
     lands.
     """
-    for seek in ('1', '2', '0.5', '0'):
-        try:
-            subprocess.run(
-                ['ffmpeg', '-y', '-ss', seek, '-i', video_path,
-                 '-frames:v', '1', '-q:v', '2', dest_path],
-                capture_output=True, timeout=60,
-            )
-        except Exception:
-            continue
-        try:
-            if Path(dest_path).is_file() and Path(dest_path).stat().st_size > 0:
-                return True
-        except Exception:
-            pass
-    return False
+    try:
+        subprocess.run(
+            ['ffmpeg', '-y', '-ss', str(seek), '-i', video_path,
+             '-frames:v', '1', '-q:v', '2', dest_path],
+            capture_output=True, timeout=60,
+        )
+    except Exception:
+        return False
+    try:
+        return Path(dest_path).is_file() and Path(dest_path).stat().st_size > 0
+    except Exception:
+        return False
 
 
 def _load_cookies_for_playwright(url: str) -> list:
